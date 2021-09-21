@@ -1,7 +1,7 @@
 #!/bin/bash
-#$ -pe ib 8
+#$ -pe ib 64 
 #$ -l h_rt=0:30:0
-#$ -l h_vmem=4G
+#$ -l h_vmem=8G
 #$ -l placement=scatter
 #$ -cwd -V
 
@@ -26,14 +26,15 @@ if [ ! -d checkpoint_files ]; then mkdir checkpoint_files; fi
 if [ ! -d monc_stdout ]; then mkdir monc_stdout; fi
 if [ ! -d diagnostic_files ]; then mkdir diagnostic_files; fi
 
-
+ulimit -s unlimited
+ulimit -c unlimited
 # Set the number of threads to 1
 #   This prevents any system libraries from automatically  
 #   using threading.
 export OMP_NUM_THREADS=1
 
 # set env variables for submission command
-exp=fire_sc_casim
+exp=fire_sc_casim_aerosol
 config_path=testcases/course_examples/${exp}.mcf
 checkpoint_fn=checkpoint_files/${exp}.nc
 

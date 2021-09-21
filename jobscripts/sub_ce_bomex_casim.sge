@@ -1,5 +1,5 @@
 #!/bin/bash
-#$ -pe ib 8
+#$ -pe ib 8 
 #$ -l h_rt=0:30:0
 #$ -l h_vmem=4G
 #$ -l placement=scatter
@@ -33,7 +33,7 @@ if [ ! -d diagnostic_files ]; then mkdir diagnostic_files; fi
 export OMP_NUM_THREADS=1
 
 # set env variables for submission command
-exp=fire_sc_casim
+exp=bomex_casim
 config_path=testcases/course_examples/${exp}.mcf
 checkpoint_fn=checkpoint_files/${exp}.nc
 

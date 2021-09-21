@@ -1,7 +1,7 @@
 #!/bin/bash
-#$ -pe ib 8
+#$ -pe ib 4 
 #$ -l h_rt=0:30:0
-#$ -l h_vmem=4G
+#$ -l h_vmem=1G
 #$ -l placement=scatter
 #$ -cwd -V
 
@@ -33,8 +33,8 @@ if [ ! -d diagnostic_files ]; then mkdir diagnostic_files; fi
 export OMP_NUM_THREADS=1
 
 # set env variables for submission command
-exp=fire_sc_casim
-config_path=testcases/course_examples/${exp}.mcf
+exp=drybl
+config_path=testcases/drybl/${exp}.mcf
 checkpoint_fn=checkpoint_files/${exp}.nc
 
 mpirun -np 4 ./build/bin/monc_driver.exe --config=$config_path  --checkpoint_file=$checkpoint_fn &> monc_stdout/output_${exp}_dump_1
