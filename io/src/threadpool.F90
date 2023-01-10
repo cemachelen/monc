@@ -230,6 +230,6 @@ contains
 
     if (ierr .ne. 0) then
       call log_log(LOG_ERROR, "Pthreads error in IO server, error code="//conv_to_string(ierr))
-    end if    
+    end if
   end subroutine check_thread_status  
 end module threadpool_mod
