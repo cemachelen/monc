@@ -6,14 +6,16 @@ module registry_mod
   use datadefn_mod, only : STRING_LENGTH
   use collections_mod, only : list_type, hashmap_type, map_type, iterator_type, c_size, c_generic_at, c_key_at, c_get_integer, &
        c_get_string, c_get_generic, c_remove, c_put_generic, c_put_string, c_put_integer, c_put_real, c_is_empty, &
-       c_contains, c_add_generic, c_add_string, c_free, c_get_iterator, c_has_next, c_next_mapentry
+       c_contains, c_add_generic, c_add_string, c_free, c_get_iterator, c_has_next, c_next_mapentry, mapentry_type
   use monc_component_mod, only : component_descriptor_type, component_field_value_type, component_field_information_type, &
        FINALISATION_PRIORITY_INDEX, INIT_PRIORITY_INDEX, TIMESTEP_PRIORITY_INDEX, &
        pointer_wrapper_value_type, pointer_wrapper_info_type
   use conversions_mod, only : conv_to_string
   use state_mod, only : model_state_type
   use optionsdatabase_mod, only : options_has_key, options_get_string, options_get_logical, options_get_array_size
-  use logging_mod, only : LOG_INFO, LOG_ERROR, LOG_WARN, log_master_log
+  use logging_mod, only : LOG_INFO, LOG_ERROR, LOG_WARN, log_master_log, log_is_master
+  use grids_mod, only : X_INDEX, Y_INDEX, Z_INDEX
+
   implicit none
 
 #ifndef TEST_MODE
@@ -169,7 +171,7 @@ contains
 
     class(*), pointer :: data
 
-    if (c_contains(field_procedure_retrievals, name)) then
+    if (c_contains(field_procedure_sizings, name)) then
       data=>c_get_generic(field_procedure_sizings, name)
       select type(data)
       type is (pointer_wrapper_info_type)
@@ -204,11 +206,12 @@ contains
       do i=1, size(descriptor%published_fields)
         field_generic_description=>descriptor%published_fields(i)
         call c_add_generic(field_information, field_generic_description, .false.)
+        
         allocate(wrapper_value) ! We allocate our own copy of the descriptor here to ensure the consistency of registry information
         wrapper_value%ptr => descriptor%field_value_retrieval
         genericwrapper=>wrapper_value
         call c_put_generic(field_procedure_retrievals, descriptor%published_fields(i), genericwrapper, .false.)
-
+        
         allocate(wrapper_info)
         wrapper_info%ptr => descriptor%field_information_retrieval
         genericwrapper=>wrapper_info
@@ -277,7 +280,7 @@ contains
   subroutine execute_initialisation_callbacks(current_state)
     type(model_state_type), intent(inout) :: current_state
 
-    call execute_callbacks(init_callbacks, current_state)
+    call execute_callbacks(init_callbacks, current_state, "initialisation_callback")
   end subroutine execute_initialisation_callbacks
 
   !> Calls all timestep callbacks with the specified state
@@ -287,7 +290,7 @@ contains
     integer :: group_id
 
     if (.not. c_is_empty(timestep_callbacks(group_id))) then
-      call execute_callbacks(timestep_callbacks(group_id), current_state)
+      call execute_callbacks(timestep_callbacks(group_id), current_state, "timestep_callback")
     end if
   end subroutine execute_timestep_callbacks
 
@@ -296,7 +299,7 @@ contains
   subroutine execute_finalisation_callbacks(current_state)
     type(model_state_type), intent(inout) :: current_state
 
-    call execute_callbacks(finalisation_callbacks, current_state)
+    call execute_callbacks(finalisation_callbacks, current_state, "finalisation_callback")
   end subroutine execute_finalisation_callbacks
 
   !> Orders all callbacks in the prospective stages based upon the priorities of each descriptor.
@@ -443,7 +446,8 @@ contains
 
     entries = c_size(stage_callbacks)
     do i=1,entries
-      call log_master_log(LOG_INFO, "Stage: "//stagetitle//" at: "//trim(conv_to_string(i))//"  "//c_key_at(stage_callbacks, i))
+      call log_master_log(LOG_INFO, "Stage: "//stagetitle//" at: "//trim(conv_to_string(i))//&
+                          "  "//trim(c_key_at(stage_callbacks, i)) )
     end do
   end subroutine display_callbacks_in_order
 
@@ -625,19 +629,110 @@ contains
   !> Will execute the appropriate callbacks in a specific map_type given the current state
   !! @param callbackmap_type The map_type of callback hooks to execute
   !! @param currentState The model state which may be (and likely is) modified in callbacks
-  subroutine execute_callbacks(callback_map, current_state)
+  subroutine execute_callbacks(callback_map, current_state, debug_label)
     type(map_type), intent(inout) :: callback_map
+    character(len=*), intent(in) :: debug_label
     type(model_state_type), intent(inout) :: current_state
 
     class(*), pointer :: data
     type(iterator_type) :: iterator
+    type(mapentry_type) :: map_entry
+    integer :: k,j,i
 
     iterator=c_get_iterator(callback_map)
     do while (c_has_next(iterator))
-      data=>c_get_generic(c_next_mapentry(iterator))
+      map_entry=c_next_mapentry(iterator)
+      data=>c_get_generic(map_entry)
       select type(data)
-        type is (pointer_wrapper_type)
-        call data%ptr(current_state)
+      type is (pointer_wrapper_type)
+      call data%ptr(current_state)
+
+      ! Debugging prognostic print block to track prognostic modifications from component to component
+      ! Only active on one MONC (determined in simplesetup)
+      if (current_state%print_debug_data) then
+          
+        ! Continue for all initialisation and finalisation callbacks or if column_global matches the
+        ! requested coordinate
+        if ((trim(debug_label) .eq. "initialisation_callback") .or. &
+            (trim(debug_label) .eq. "finalisation_callback") .or. &
+            (current_state%column_global_x == current_state%pdd_x .and. &
+             current_state%column_global_y == current_state%pdd_y)) then
+          
+          ! Convert to local MONC array indices
+          k = current_state%pdd_z
+          i = current_state%pdd_x - current_state%local_grid%start(X_INDEX) + 1
+          j = current_state%pdd_y - current_state%local_grid%start(Y_INDEX) + 1
+
+          ! Actual printing
+          print *, trim(debug_label),':',trim(map_entry%key),', (k,j,i):',k,j,i, &
+                   ', (g_y,g_x)', current_state%column_global_y, current_state%column_global_x, &
+                   ', timestep: ', current_state%timestep, ', global_rank: ', current_state%parallel%my_global_rank, &
+                   ', MONC rank: ', current_state%parallel%my_rank
+          print "(a15,3i10)", &
+                   '    stepping ',  current_state%scalar_stepping, current_state%momentum_stepping, &
+                                     current_state%field_stepping
+          if (allocated(current_state%zu%data) .and. allocated(current_state%u%data) .and. &
+              allocated(current_state%su%data) .and. allocated(current_state%savu%data)) then
+            print "(a15,4es25.15)", &
+                   '           u ',  current_state%zu%data(k,j,i), current_state%u%data(k,j,i), &
+                                     current_state%su%data(k,j,i), current_state%savu%data(k,j,i)
+          endif
+          if (allocated(current_state%zv%data) .and. allocated(current_state%v%data) .and. &
+              allocated(current_state%sv%data) .and. allocated(current_state%savv%data)) then
+            print "(a15,4es25.15)", &
+                   '           v ',  current_state%zv%data(k,j,i), current_state%v%data(k,j,i), &
+                                     current_state%sv%data(k,j,i), current_state%savv%data(k,j,i)
+          endif
+          if (allocated(current_state%zw%data) .and. allocated(current_state%w%data) .and. &
+              allocated(current_state%sw%data) .and. allocated(current_state%savw%data)) then
+            print "(a15,4es25.15)", &
+                   '           w ',  current_state%zw%data(k,j,i), current_state%w%data(k,j,i), &
+                                     current_state%sw%data(k,j,i), current_state%savw%data(k,j,i)
+          endif
+          if (allocated(current_state%zth%data) .and. allocated(current_state%th%data) .and. &
+              allocated(current_state%sth%data)) then
+            print "(a15,3es25.15)", &
+                   '          th ',  current_state%zth%data(k,j,i), current_state%th%data(k,j,i), &
+                                     current_state%sth%data(k,j,i)
+          endif
+          if (allocated(current_state%zq(1)%data) .and. allocated(current_state%q(1)%data) .and. &
+              allocated(current_state%sq(1)%data)) then
+            print "(a15,3es25.15)", &
+                   '          qv ',  current_state%zq(1)%data(k,j,i), current_state%q(1)%data(k,j,i), &
+                                     current_state%sq(1)%data(k,j,i)
+          endif
+          if (allocated(current_state%p%data)) then
+            print "(a15,es25.15)", &
+                   '           p ',  current_state%p%data(k,j,i)
+          endif
+          if (allocated(current_state%vis_coefficient%data) .and. &
+              allocated(current_state%diff_coefficient%data)) then
+            print "(a15,2es25.15)", &
+                   '       coeff ',  current_state%vis_coefficient%data(k,j,i), &
+                                     current_state%diff_coefficient%data(k,j,i)
+          endif
+          if (allocated(current_state%global_grid%configuration%vertical%olzthbar) .and.&
+              allocated(current_state%global_grid%configuration%vertical%olthbar) ) then
+            print "(a15,2es25.15)", &
+                   '  olth(z)bar ', current_state%global_grid%configuration%vertical%olzthbar(k), &
+                                    current_state%global_grid%configuration%vertical%olthbar(k)
+          endif
+          if (allocated(current_state%global_grid%configuration%vertical%olzqbar) .and.&
+              allocated(current_state%global_grid%configuration%vertical%olqbar) ) then
+            print "(a15,2es25.15)", & 
+                   '   olq(z)bar ', current_state%global_grid%configuration%vertical%olzqbar(k,1), &
+                                    current_state%global_grid%configuration%vertical%olqbar(k,1)
+          endif
+        end if ! test i and j or init/final callback
+      end if ! test print_debug_data
+
+
+!        type is (pointer_wrapper_init_type)
+!          call data%ptr(current_state)
+!        type is (pointer_wrapper_timestep_type)
+!          call data%ptr(current_state)
+!        type is (pointer_wrapper_finalisation_type)
+!          call data%ptr(current_state)
       end select
     end do
   end subroutine execute_callbacks
@@ -659,4 +754,47 @@ contains
     genericwrapper=>wrapper
     call c_put_generic(callback_map, name, genericwrapper, .false.)
   end subroutine add_callback
+  
+!  subroutine add_callback_init(callback_map, name, procedure_pointer)
+!    type(map_type), intent(inout) :: callback_map
+!    procedure(component_initialisation), pointer :: procedure_pointer
+!    character(len=*), intent(in) :: name
+
+!    type(pointer_wrapper_init_type), pointer :: wrapper
+!    class(*), pointer :: genericwrapper
+
+!    allocate(wrapper) ! We allocate our own copy of the descriptor here to ensure the consistency of registry information
+!    wrapper%ptr => procedure_pointer
+!    genericwrapper=>wrapper
+!    call c_put_generic(callback_map, name, genericwrapper, .false.)
+!  end subroutine add_callback_init
+  
+!  subroutine add_callback_timestep(callback_map, name, procedure_pointer)
+!    type(map_type), intent(inout) :: callback_map
+!    procedure(component_timestep), pointer :: procedure_pointer
+!    character(len=*), intent(in) :: name
+
+!    type(pointer_wrapper_timestep_type), pointer :: wrapper
+!    class(*), pointer :: genericwrapper
+
+!    allocate(wrapper)
+!    wrapper%ptr => procedure_pointer
+!    genericwrapper=>wrapper
+!    call c_put_generic(callback_map, name, genericwrapper, .false.)
+!  end subroutine add_callback_timestep
+  
+!  subroutine add_callback_finalisation(callback_map, name, procedure_pointer)
+!    type(map_type), intent(inout) :: callback_map
+!    procedure(component_finalisation), pointer :: procedure_pointer
+!    character(len=*), intent(in) :: name
+
+!    type(pointer_wrapper_finalisation_type), pointer :: wrapper
+!    class(*), pointer :: genericwrapper
+
+!    allocate(wrapper)
+!    wrapper%ptr => procedure_pointer
+!    genericwrapper=>wrapper
+!    call c_put_generic(callback_map, name, genericwrapper, .false.)
+!  end subroutine add_callback_finalisation
+  
 end module registry_mod

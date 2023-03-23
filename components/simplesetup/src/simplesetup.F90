@@ -2,11 +2,13 @@ module simplesetup_mod
   use datadefn_mod, only : DEFAULT_PRECISION
   use monc_component_mod, only : component_descriptor_type
   use state_mod, only : PRESCRIBED_SURFACE_FLUXES, model_state_type
-  use logging_mod, only : LOG_ERROR, log_log
+  use conversions_mod, only : conv_to_string
+  use logging_mod, only :  LOG_INFO, LOG_ERROR, log_log, log_master_log
   use grids_mod, only : local_grid_type, global_grid_type, X_INDEX, Y_INDEX, Z_INDEX, PRIMAL_GRID, DUAL_GRID
   use prognostics_mod, only : prognostic_field_type
   use optionsdatabase_mod, only : options_get_integer, options_get_logical, options_get_real, &
        options_get_integer_array, options_get_real_array
+  use tracers_mod, only : get_tracer_options
   use q_indices_mod, only: get_q_index, standard_q_names
   use registry_mod, only : is_component_enabled
 
@@ -19,6 +21,7 @@ module simplesetup_mod
   integer :: x_size, y_size, z_size
   real(kind=DEFAULT_PRECISION) :: zztop, dxx, dyy
   logical :: enable_theta=.false.
+
   public simplesetup_get_descriptor
 contains
 
@@ -40,6 +43,16 @@ contains
       call allocate_prognostics(current_state)
       current_state%initialised=.true.
 
+    end if
+
+    ! Isolate MONC process that has the requested print_debug_data location by changing the value of the flag to be true
+    !   only on that process.
+    if (current_state%print_debug_data) then
+      current_state%print_debug_data =                                        &
+        current_state%pdd_x .ge. current_state%local_grid%start(X_INDEX).and. &
+        current_state%pdd_x .le. current_state%local_grid%end(X_INDEX)  .and. &
+        current_state%pdd_y .ge. current_state%local_grid%start(Y_INDEX).and. &
+        current_state%pdd_y .le. current_state%local_grid%end(Y_INDEX) 
     end if
   end subroutine initialisation_callback
 
@@ -77,9 +90,11 @@ contains
       call allocate_prognostic(current_state%zth, alloc_z, alloc_y, alloc_x, DUAL_GRID, DUAL_GRID, DUAL_GRID)
       call allocate_prognostic(current_state%sth, alloc_z, alloc_y, alloc_x, DUAL_GRID, DUAL_GRID, DUAL_GRID)
     end if
+    
     if (current_state%number_q_fields .gt. 0) then
       allocate(current_state%q(current_state%number_q_fields), &
-           current_state%zq(current_state%number_q_fields), current_state%sq(current_state%number_q_fields))
+               current_state%zq(current_state%number_q_fields),&
+               current_state%sq(current_state%number_q_fields))
       do i=1, current_state%number_q_fields
         call allocate_prognostic(current_state%q(i), alloc_z, alloc_y, alloc_x, DUAL_GRID, DUAL_GRID, DUAL_GRID)
         call allocate_prognostic(current_state%zq(i), alloc_z, alloc_y, alloc_x, DUAL_GRID, DUAL_GRID, DUAL_GRID)
@@ -90,6 +105,18 @@ contains
       current_state%water_vapour_mixing_ratio_index=get_q_index(standard_q_names%VAPOUR, 'simplesetup')
       current_state%liquid_water_mixing_ratio_index=get_q_index(standard_q_names%CLOUD_LIQUID_MASS, 'simplesetup')
     end if
+    
+    if (current_state%n_tracers .gt. 0) then
+      allocate( current_state%tracer(current_state%n_tracers),  &
+                current_state%ztracer(current_state%n_tracers), &
+                current_state%stracer(current_state%n_tracers))
+      do i=1, current_state%n_tracers
+        call allocate_prognostic(current_state%tracer(i), alloc_z, alloc_y, alloc_x, DUAL_GRID, DUAL_GRID, DUAL_GRID)
+        call allocate_prognostic(current_state%ztracer(i), alloc_z, alloc_y, alloc_x, DUAL_GRID, DUAL_GRID, DUAL_GRID)
+        call allocate_prognostic(current_state%stracer(i), alloc_z, alloc_y, alloc_x, DUAL_GRID, DUAL_GRID, DUAL_GRID)
+      end do
+      
+    endif ! allocate tracers
 
     ! Set arrays for radiative heating rates - Note: this should be protected by a switch
     call allocate_prognostic(current_state%sth_lw, alloc_z, alloc_y, alloc_x, DUAL_GRID, DUAL_GRID, DUAL_GRID)
@@ -216,6 +243,25 @@ contains
       if (current_state%fix_ugal)current_state%ugal=options_get_real(current_state%options_database, "ugal")
       if (current_state%fix_vgal)current_state%vgal=options_get_real(current_state%options_database, "vgal")
     end if
+
+    ! Parameters for print_debug_data
+    current_state%print_debug_data = options_get_logical(current_state%options_database, "print_debug_data")
+    if (current_state%print_debug_data) then
+      current_state%pdd_z = options_get_integer(current_state%options_database, "pdd_z")
+      if (current_state%pdd_z .lt. 0) current_state%pdd_z = z_size/2
+      current_state%pdd_y = options_get_integer(current_state%options_database, "pdd_y")
+      if (current_state%pdd_y .lt. 0) current_state%pdd_y = y_size/2
+      current_state%pdd_x = options_get_integer(current_state%options_database, "pdd_x")
+      if (current_state%pdd_x .lt. 0) current_state%pdd_x = x_size/2
+      
+      current_state%column_global_x = current_state%pdd_x
+      current_state%column_global_y = current_state%pdd_y
+      current_state%halo_column = .false.
+    end if
+
+    if (.not. current_state%reconfig_run) then        
+      call get_tracer_options(current_state)
+    end if ! not reconfig
 
   end subroutine read_configuration
 end module simplesetup_mod
