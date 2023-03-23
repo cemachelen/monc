@@ -1,4 +1,4 @@
-!> Calculates fields related to distributions of data on full-domain horizontal 2d slices 
+!> Calculates fields related to distributions of data on full-domain horizontal 2d slices
 module pdf_analysis_mod
   use monc_component_mod, only : COMPONENT_ARRAY_FIELD_TYPE, &
       COMPONENT_DOUBLE_DATA_TYPE, component_descriptor_type, &
@@ -8,6 +8,7 @@ module pdf_analysis_mod
   use datadefn_mod, only : DEFAULT_PRECISION, PRECISION_TYPE
   use optionsdatabase_mod, only : options_has_key, options_get_logical, options_get_integer, options_get_string, options_get_real
   use mpi, only : MPI_SUM, MPI_IN_PLACE, MPI_INT, MPI_REAL, MPI_DOUBLE
+  use mpi_error_handler_mod, only : check_mpi_success
   use logging_mod, only : LOG_INFO, LOG_DEBUG, LOG_ERROR, log_master_log, log_is_master
   use conversions_mod, only : conv_to_string
   use maths_mod, only : sort_1d
@@ -26,7 +27,7 @@ module pdf_analysis_mod
                                                         ! these are available on all processes
 
   integer :: tpts  ! total number of horizontal grid points on full domain
-  integer :: lpts  ! local number of horizontal grid points on 
+  integer :: lpts  ! local number of horizontal grid points on
 
   integer :: n_w_bins ! number of histogram bins for w
   real(kind=DEFAULT_PRECISION), dimension(:,:), allocatable :: w_histogram_profile_local
@@ -92,17 +93,17 @@ contains
     !> Allocate and collect local sizes of horizontal grid points; send to all proceses
     allocate(gpts_on_proc(current_state%parallel%processes))
     call mpi_allgather(lpts, 1, MPI_INT, gpts_on_proc, 1, MPI_INT, current_state%parallel%monc_communicator, ierr)
-
+    call check_mpi_success(ierr, "pdf_analysis_mod", "init_callback", "mpi_allgather")
     !> Allocate and initialize displacement values
     !  displacements are the array locations specifying the starting data location for data on a given process
     !  based on how many data points belong to lower-rank (value) proceses
-    allocate(displacements(current_state%parallel%processes)) 
+    allocate(displacements(current_state%parallel%processes))
     displacements(1) = 0
     do inc = 2, current_state%parallel%processes
       displacements(inc) = displacements(inc-1) + gpts_on_proc(inc-1)
     end do ! loop over processes
 
-    ! Since these current_state variables are not prognostics, it is possible for the model to be run without them 
+    ! Since these current_state variables are not prognostics, it is possible for the model to be run without them
     ! and then reconfigured with this component enabled.  In that case, they will not be found in the checkpoint,
     ! and they will not be allocated, but they will still be needed.
     ! So in all cases, if this component is enabled, we make certain these are allocated.
@@ -138,7 +139,7 @@ contains
     calculate_diagnostics = current_state%diagnostic_sample_timestep
 
     !> Current forumulation only handles vertical velocity percentiles.
-    !! Future enhancements may employ this component to perform additional 
+    !! Future enhancements may employ this component to perform additional
     !! operations that require access to full horizontal fields, such as
     !! pdf calculations.
 
@@ -154,7 +155,7 @@ contains
   subroutine finalisation_callback(current_state)
     type(model_state_type), target, intent(inout) :: current_state
 
-    if (allocated(tmp_all)) deallocate(tmp_all)    
+    if (allocated(tmp_all)) deallocate(tmp_all)
     if (allocated(w_histogram_profile_local)) deallocate(w_histogram_profile_local)
 
   end subroutine finalisation_callback
@@ -168,7 +169,7 @@ contains
 
     integer :: k, num_neg, num_pos, dd_thresh_pos, ud_thresh_pos
     integer :: bnc, bpn, bpx
-    integer :: max_up_k, min_dwn_k 
+    integer :: max_up_k, min_dwn_k
     real(kind=DEFAULT_PRECISION), dimension((lpts+1)/2) :: T
     real(kind=DEFAULT_PRECISION), dimension((tpts+1)/2) :: Tall
     real(kind=DEFAULT_PRECISION)                        :: max_up, min_dwn, &
@@ -188,7 +189,7 @@ contains
     w_histogram_profile_local(:,:) = 0.0_DEFAULT_PRECISION
 
     !> reset thresholds
-    current_state%global_grid%configuration%vertical%w_dwn(:) = 0.0_DEFAULT_PRECISION 
+    current_state%global_grid%configuration%vertical%w_dwn(:) = 0.0_DEFAULT_PRECISION
     current_state%global_grid%configuration%vertical%w_up(:)  = 0.0_DEFAULT_PRECISION
 
     !> Loop over levels
@@ -215,11 +216,12 @@ contains
                    count( tmp_var >= w_histogram_bins(bnc)               &
                           .and.                                          &
                           tmp_var < w_histogram_bins(bnc) + w_bin_size )
-       end do ! loop over 
+       end do ! loop over
 
        !> Gather tmp_var local fields to single process (0), global data stored in tmp_all
        call mpi_gatherv(tmp_var, lpts, PRECISION_TYPE, tmp_all, gpts_on_proc, displacements, PRECISION_TYPE, &
                         0, current_state%parallel%monc_communicator, ierr )
+       call check_mpi_success(ierr, "pdf_analysis_mod", "calculate_w_percentiles", "mpi_gatherv")
 
        !> Perform global operations
        if (current_state%parallel%my_rank == 0) then
@@ -231,7 +233,7 @@ contains
          num_neg = count(tmp_all < 0.0_DEFAULT_PRECISION)
          num_pos = count(tmp_all > 0.0_DEFAULT_PRECISION)
 
-         dd_thresh_pos = max(1, int(num_neg * dwnpercrit)) 
+         dd_thresh_pos = max(1, int(num_neg * dwnpercrit))
          ud_thresh_pos = min(tpts, tpts - int(num_pos * uppercrit) + 1)
 
          current_state%global_grid%configuration%vertical%w_dwn(k) = tmp_all(dd_thresh_pos)
@@ -243,7 +245,7 @@ contains
              min_dwn_th = tmp_all(dd_thresh_pos)
              min_dwn = tmp_all(1)  ! sorted array
              min_dwn_k = k
-           end if 
+           end if
            if ( tmp_all(ud_thresh_pos) > max_up_th ) then
              max_up_th = tmp_all(ud_thresh_pos)
              max_up = tmp_all(tpts)  ! sorted array
@@ -258,8 +260,10 @@ contains
     !> Inform all processes of calculated thresholds
     call mpi_bcast(current_state%global_grid%configuration%vertical%w_dwn(:), current_state%local_grid%size(Z_INDEX), &
                    PRECISION_TYPE, 0, current_state%parallel%monc_communicator, ierr)
+    call check_mpi_success(ierr, "pdf_analysis_mod", "calculate_w_percentiles", "mpi_bcast")
     call mpi_bcast(current_state%global_grid%configuration%vertical%w_up(:),  current_state%local_grid%size(Z_INDEX), &
                    PRECISION_TYPE, 0, current_state%parallel%monc_communicator, ierr)
+    call check_mpi_success(ierr, "pdf_analysis_mod", "calculate_w_percentiles", "mpi_bcast")
 
 
     !> Display some diagnostics, if requested
@@ -270,12 +274,12 @@ contains
       call log_master_log(LOG_INFO, 'Maximum updraft:   '&
                           //trim(conv_to_string(max_up))//' at level '//trim(conv_to_string(max_up_k)) )
       call log_master_log(LOG_INFO, 'Minimum downdraft threshold:   '&
-                          //trim(conv_to_string(min_dwn_th))//' found at level '//trim(conv_to_string(min_dwn_k)) )   
+                          //trim(conv_to_string(min_dwn_th))//' found at level '//trim(conv_to_string(min_dwn_k)) )
       call log_master_log(LOG_INFO, 'Minimum downdraft:   '&
                           //trim(conv_to_string(min_dwn))//' at level '//trim(conv_to_string(min_dwn_k)) )
     end if ! show_critical_w
 
-  end subroutine calculate_w_percentiles   
+  end subroutine calculate_w_percentiles
 
 
   !> Field information retrieval callback, this returns information for a specific components published field
@@ -341,7 +345,7 @@ contains
     else if (name .eq. "w_histogram_bins_local") then
       allocate(field_value%real_1d_array(n_w_bins), &
                source=w_histogram_bins(:))
-    end if 
+    end if
   end subroutine field_value_retrieval_callback
 
 end module pdf_analysis_mod

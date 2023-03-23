@@ -11,6 +11,7 @@ module checkpointer_mod
   use logging_mod, only : LOG_INFO, LOG_WARN, log_master_log, log_master_newline
   use checkpointer_write_checkpoint_mod, only : write_checkpoint_file
   use checkpointer_read_checkpoint_mod, only : read_checkpoint_file
+  use mpi_error_handler_mod, only : check_mpi_success
   implicit none
 
 #ifndef TEST_MODE
@@ -110,6 +111,7 @@ contains
     end if
     ! Barrier here to ensure all processes dumped before log_log stats (is there a better way?)
     call mpi_barrier(current_state%parallel%monc_communicator, ierr)
+    call check_mpi_success(ierr, "checkpointer_mod", "perform_checkpoint_dump", "mpi_barrier")
     call cpu_time(end_dump_time)
     call log_dump_stats(current_state, start_dump_time, end_dump_time)
   end subroutine perform_checkpoint_dump
@@ -124,9 +126,9 @@ contains
 
     call log_master_newline()
     call log_master_log(LOG_INFO, "Model dump completed in "//trim(conv_to_string(int((end_time-start_time)*1000)))//"ms")
-  end subroutine log_dump_stats  
+  end subroutine log_dump_stats
 
-  !> Generates a unique filename based upon the base one specified and the number 
+  !> Generates a unique filename based upon the base one specified and the number
   !! of completed timesteps
   !! @param current_state The current model state
   !! @param newName The new name that is produced by this subroutine
@@ -135,7 +137,7 @@ contains
     character(len=STRING_LENGTH), intent(out) :: new_name
 
     integer :: dot_posn
-    
+
     dot_posn=index(checkpoint_file, ".")
     if (dot_posn .gt. 0) then
       new_name = checkpoint_file(1:dot_posn-1)
@@ -145,6 +147,6 @@ contains
     new_name=trim(new_name)//"_"//trim(conv_to_string(current_state%timestep))
     if (dot_posn .gt. 0) then
       new_name=trim(new_name)//checkpoint_file(dot_posn:len(checkpoint_file))
-    end if    
-  end subroutine generate_unique_filename  
+    end if
+  end subroutine generate_unique_filename
 end module checkpointer_mod

@@ -13,6 +13,7 @@ module pencil_fft_mod
   !use fftw_mod, only : C_DOUBLE_COMPLEX, C_PTR, FFTW_BACKWARD, FFTW_FORWARD, FFTW_ESTIMATE, fftw_plan_many_dft_r2c, &
   !     fftw_plan_many_dft_c2r, fftw_execute_dft_c2r, fftw_execute_dft_r2c, fftw_destroy_plan
   use mpi, only : MPI_DOUBLE_COMPLEX, MPI_INT, MPI_COMM_SELF,MPI_Wtime
+  use mpi_error_handler_mod, only : check_mpi_success
   use ffte_mod, only: ffte_r2c, ffte_c2r, ffte_init, ffte_finalise, ffte_check_factors
   use optionsdatabase_mod, only: options_get_logical
   implicit none
@@ -36,18 +37,18 @@ module pencil_fft_mod
 
   ! Temporary buffers used in transposition
   real(kind=DEFAULT_PRECISION), dimension(:,:,:), contiguous, pointer :: real_buffer1, real_buffer2, real_buffer3, &
-       fft_in_y_buffer , fft_in_x_buffer       
+       fft_in_y_buffer , fft_in_x_buffer
   complex(C_DOUBLE_COMPLEX), dimension(:,:,:), contiguous, pointer :: buffer1, buffer2
 
   ! Pointers to FFTW plans and whether these have been initialised (only initialised once)
   !type(C_PTR) :: fftw_plan(4)
   !logical :: fftw_plan_initialised(4)=.false.
-  
+
   public initialise_pencil_fft, finalise_pencil_fft, perform_forward_3dfft, perform_backwards_3dfft
-  
+
   !whether to use FFTE (true) or FFTW (false)
   logical :: ffte = .true.
-  
+
   !counters for number of times the fft routines (FFTW or FFTE) are called and the time spent in them
   integer :: nforward, nback
   double precision :: tforward, tback
@@ -62,7 +63,7 @@ contains
   function initialise_pencil_fft(current_state, my_y_start, my_x_start)
     type(model_state_type), intent(inout) :: current_state
     integer, intent(out) :: my_y_start, my_x_start
-    integer :: initialise_pencil_fft(3) 
+    integer :: initialise_pencil_fft(3)
 
     integer :: ierr, y_distinct_sizes(current_state%parallel%dim_sizes(Y_INDEX)), &
          x_distinct_sizes(current_state%parallel%dim_sizes(X_INDEX))
@@ -72,20 +73,26 @@ contains
 
     if (current_state%parallel%dim_sizes(Y_INDEX) .gt. 1 .and. current_state%parallel%dim_sizes(X_INDEX) .gt. 1) then
       call mpi_cart_sub(current_state%parallel%neighbour_comm, (/1,0/), dim_y_comm, ierr)
+      call check_mpi_success(ierr, "pencil_fft_mod", "initialise_pencil_fft", "mpi_cart_sub")
       call mpi_cart_sub(current_state%parallel%neighbour_comm, (/0,1/), dim_x_comm, ierr)
+      call check_mpi_success(ierr, "pencil_fft_mod", "initialise_pencil_fft", "mpi_cart_sub")
 
       call mpi_allgather(current_state%local_grid%size(Y_INDEX), 1, MPI_INT, y_distinct_sizes, 1, MPI_INT, dim_y_comm, ierr)
+      call check_mpi_success(ierr, "pencil_fft_mod", "initialise_pencil_fft", "mpi_allgather")
       call mpi_allgather(current_state%local_grid%size(X_INDEX), 1, MPI_INT, x_distinct_sizes, 1, MPI_INT, dim_x_comm, ierr)
+      call check_mpi_success(ierr, "pencil_fft_mod", "initialise_pencil_fft", "mpi_allgather")
     else if (current_state%parallel%dim_sizes(Y_INDEX) .gt. 1) then
       dim_y_comm=current_state%parallel%monc_communicator
       dim_x_comm=MPI_COMM_SELF
       call mpi_allgather(current_state%local_grid%size(Y_INDEX), 1, MPI_INT, y_distinct_sizes, 1, MPI_INT, dim_y_comm, ierr)
       x_distinct_sizes=current_state%local_grid%size(X_INDEX)
-    else if (current_state%parallel%dim_sizes(X_INDEX) .gt. 1) then      
+      call check_mpi_success(ierr, "pencil_fft_mod", "initialise_pencil_fft", "mpi_allgather")
+    else if (current_state%parallel%dim_sizes(X_INDEX) .gt. 1) then
       dim_y_comm=MPI_COMM_SELF
       dim_x_comm=current_state%parallel%monc_communicator
       y_distinct_sizes=current_state%local_grid%size(Y_INDEX)
       call mpi_allgather(current_state%local_grid%size(X_INDEX), 1, MPI_INT, x_distinct_sizes, 1, MPI_INT, dim_x_comm, ierr)
+      call check_mpi_success(ierr, "pencil_fft_mod", "initialise_pencil_fft", "mpi_allgather")
     else
       dim_y_comm=MPI_COMM_SELF
       dim_x_comm=MPI_COMM_SELF
@@ -100,7 +107,7 @@ contains
 
     !get from the options whether we are to use FFTE or FFTW
     ffte=options_get_logical(current_state%options_database, "FFTE")
-    
+
     if (ffte) then
       if (current_state%parallel%my_rank .eq. 0) print *, "Using FFTE for FFTs"
       !check fft sizes are appropriate for FFTE
@@ -111,15 +118,15 @@ contains
     else
       if (current_state%parallel%my_rank .eq. 0) print *, "Using FFTW for FFTs"
     endif
-    
+
     nforward = 0
     nback = 0
 
     tforward = 0.d0
     tback = 0d0
-    
 
-  end function initialise_pencil_fft  
+
+  end function initialise_pencil_fft
 
   !> Cleans up allocated buffer memory
   subroutine finalise_pencil_fft(monc_communicator)
@@ -129,7 +136,7 @@ contains
     !do i=1,size(fftw_plan_initialised)
     !  if (fftw_plan_initialised(i)) then
     !    call fftw_destroy_plan(fftw_plan(i))
-    !  end if      
+    !  end if
     !end do
 
     !call MPI_Allreduce(tforward,tgf,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr))
@@ -147,12 +154,13 @@ contains
 
     if (dim_y_comm .ne. MPI_COMM_SELF .and. dim_y_comm .ne. monc_communicator) call mpi_comm_free(dim_y_comm, ierr)
     if (dim_x_comm .ne. MPI_COMM_SELF .and. dim_x_comm .ne. monc_communicator) call mpi_comm_free(dim_x_comm, ierr)
+    call check_mpi_success(ierr, "pencil_fft_mod", "finalise_pencil_fft", "mpi_comm_free")
     deallocate(buffer1, buffer2, real_buffer1, real_buffer2, real_buffer3, fft_in_y_buffer , fft_in_x_buffer)
-  end subroutine finalise_pencil_fft  
+  end subroutine finalise_pencil_fft
 
   !> Performs a forward 3D FFT and currently results in target data which is the X, Z, Y oriented pencil
   !! Note that the source_data here takes no account for the halo, it is up to caller to exclude this.
-  !! This does no FFT in Z, but transposes to Y, does FFT in Y, then transposes to X and 
+  !! This does no FFT in Z, but transposes to Y, does FFT in Y, then transposes to X and
   !! performs an FFT in that dimension. Pencil decomposition is used which has already been set up.
   !! @param current_state The current model state
   !! @param source_data The source real data to in the time domain
@@ -161,7 +169,7 @@ contains
     type(model_state_type), target, intent(inout) :: current_state
     real(kind=DEFAULT_PRECISION), dimension(:,:,:), intent(inout) :: source_data
     real(kind=DEFAULT_PRECISION), dimension(:,:,:), intent(out) :: target_data
-   
+
     call transpose_and_forward_fft_in_y(current_state, source_data, buffer1, real_buffer1)
     !this is needed with fftw to normalise the FFT, but FFTE automatically normalises
     if (.not. ffte) real_buffer1=real_buffer1/current_state%global_grid%size(Y_INDEX)
@@ -173,12 +181,12 @@ contains
     call transpose_to_pencil(y_from_x_transposition, (/X_INDEX, Z_INDEX, Y_INDEX/), dim_x_comm, BACKWARD, &
          real_buffer2, real_buffer3)
     call transpose_to_pencil(z_from_y_transposition, (/Y_INDEX, X_INDEX, Z_INDEX/), dim_y_comm, BACKWARD, &
-       real_buffer3, target_data)     
+       real_buffer3, target_data)
   end subroutine perform_forward_3dfft
 
   !> Performs a backwards 3D FFT and currently results in target data which is the X, Z, Y oriented pencil
   !! Note that the source_data here takes no account for the halo, it is up to caller to exclude this.
-  !! This does no FFT in Z, but transposes to Y, does FFT in Y, then transposes to X and 
+  !! This does no FFT in Z, but transposes to Y, does FFT in Y, then transposes to X and
   !! performs an FFT in that dimension. Pencil decomposition is used which has already been set up.
   !! @param current_state The current model state
   !! @param source_data The source real data to in the frequency domain
@@ -217,7 +225,7 @@ contains
 
   !> Initialises the pencil transpositions, from a pencil in one dimension to that in another
   !! @param current_state The current model state
-  !! @param y_distinct_sizes Y sizes per process 
+  !! @param y_distinct_sizes Y sizes per process
   !! @param x_distinct_sizes X sizes per process
   subroutine initialise_transpositions(current_state, y_distinct_sizes, x_distinct_sizes)
     type(model_state_type), intent(inout) :: current_state
@@ -229,22 +237,22 @@ contains
 
     ! Transpositions
     y_from_z_transposition=create_transposition(current_state%global_grid, z_pencil, Y_INDEX, y_distinct_sizes, &
-         FORWARD, (/ -1 /))   
+         FORWARD, (/ -1 /))
     x_from_y_transposition=create_transposition(current_state%global_grid, y_from_z_transposition, X_INDEX, &
          x_distinct_sizes, FORWARD, (/ Y_INDEX /))
     y_from_x_transposition=create_transposition(current_state%global_grid, x_from_y_transposition, Y_INDEX, &
-         normal_to_extended_process_dim_sizes(x_distinct_sizes), BACKWARD, (/ Y_INDEX, X_INDEX /))    
+         normal_to_extended_process_dim_sizes(x_distinct_sizes), BACKWARD, (/ Y_INDEX, X_INDEX /))
     z_from_y_transposition=create_transposition(current_state%global_grid, y_from_x_transposition, Z_INDEX, &
-         normal_to_extended_process_dim_sizes(y_distinct_sizes), BACKWARD, (/ Y_INDEX, X_INDEX /))  
+         normal_to_extended_process_dim_sizes(y_distinct_sizes), BACKWARD, (/ Y_INDEX, X_INDEX /))
 
     y_from_z_2_transposition=create_transposition(current_state%global_grid, z_from_y_transposition, Y_INDEX, &
-          normal_to_extended_process_dim_sizes(y_distinct_sizes), FORWARD, (/ Y_INDEX, X_INDEX /))   
+          normal_to_extended_process_dim_sizes(y_distinct_sizes), FORWARD, (/ Y_INDEX, X_INDEX /))
     x_from_y_2_transposition=create_transposition(current_state%global_grid, y_from_z_2_transposition, X_INDEX, &
           normal_to_extended_process_dim_sizes(x_distinct_sizes), FORWARD, (/ Y_INDEX, X_INDEX /))
     y_from_x_2_transposition=create_transposition(current_state%global_grid, x_from_y_2_transposition, Y_INDEX, &
          x_distinct_sizes, BACKWARD, (/ Y_INDEX /))
     z_from_y_2_transposition=create_transposition(current_state%global_grid, y_from_x_2_transposition, Z_INDEX, &
-          y_distinct_sizes, BACKWARD, (/ -1 /))   
+          y_distinct_sizes, BACKWARD, (/ -1 /))
   end subroutine initialise_transpositions
 
   !> Creates a specific pencil transposition description. It is maybe more a decomposition description, but the main
@@ -279,7 +287,7 @@ contains
 
     allocate(create_transposition%send_dims(3, create_transposition%process_decomposition_layout(existing_transposition%dim)), &
            create_transposition%recv_dims(3, create_transposition%process_decomposition_layout(existing_transposition%dim)))
-    if (direction == FORWARD) then            
+    if (direction == FORWARD) then
       call determine_my_process_sizes_per_dim(existing_transposition%dim, &
            existing_transposition%my_pencil_size, create_transposition%process_decomposition_layout, &
            global_grid, extended_dimensions, create_transposition%send_dims)
@@ -321,13 +329,13 @@ contains
     ! Transpose globally from Z pencil to Y pencil
     call transpose_to_pencil(y_from_z_transposition, (/Z_INDEX, Y_INDEX, X_INDEX/), dim_y_comm, FORWARD, &
        source_data, fft_in_y_buffer)
-    
+
     call perform_r2c_fft(fft_in_y_buffer, buffer, y_from_z_transposition%my_pencil_size(Y_INDEX), &
          y_from_z_transposition%my_pencil_size(X_INDEX) * y_from_z_transposition%my_pencil_size(Z_INDEX), 1)
     call convert_complex_to_real(buffer, real_buffer)
   end subroutine transpose_and_forward_fft_in_y
 
-  !> Performs the backwards FFT in X and then transposes to Y pencil. The FFT requires complex numbers which are converted to real, 
+  !> Performs the backwards FFT in X and then transposes to Y pencil. The FFT requires complex numbers which are converted to real,
   !! so the this real to complex operation is performed first. If n is the logical size of the FFT row, then the input
   !! size is n+2, complex number size is n/2+1 and we get n reals out.
   !! @param current_state The current model state
@@ -342,7 +350,7 @@ contains
 
     call convert_real_to_complex(source_data, buffer)
     call perform_c2r_fft(buffer, fft_in_x_buffer, x_from_y_2_transposition%my_pencil_size(X_INDEX)-2, &
-         x_from_y_2_transposition%my_pencil_size(Y_INDEX) * x_from_y_2_transposition%my_pencil_size(Z_INDEX), 2) 
+         x_from_y_2_transposition%my_pencil_size(Y_INDEX) * x_from_y_2_transposition%my_pencil_size(Z_INDEX), 2)
 
     ! Transpose globally from X pencil to Y pencil
     call transpose_to_pencil(y_from_x_2_transposition, (/X_INDEX, Z_INDEX, Y_INDEX/), dim_x_comm, BACKWARD, &
@@ -362,7 +370,7 @@ contains
 
     ! Go from global Y pencil to global X pencil
     call transpose_to_pencil(x_from_y_transposition, (/Y_INDEX, X_INDEX, Z_INDEX/), dim_x_comm, FORWARD, &
-       buffer1, fft_in_x_buffer)   
+       buffer1, fft_in_x_buffer)
 
     call perform_r2c_fft(fft_in_x_buffer, buffer2, x_from_y_transposition%my_pencil_size(X_INDEX), &
          x_from_y_transposition%my_pencil_size(Y_INDEX) * x_from_y_transposition%my_pencil_size(Z_INDEX), 3)
@@ -370,7 +378,7 @@ contains
     call convert_complex_to_real(buffer2, buffer3)
   end subroutine transpose_and_forward_fft_in_x
 
-  !> Performs the backwards FFT in Y and then transposes to Z pencil. The FFT requires complex numbers which are converted to real, 
+  !> Performs the backwards FFT in Y and then transposes to Z pencil. The FFT requires complex numbers which are converted to real,
   !! so the this real to complex operation is performed first. If n is the logical size of the FFT row, then the input
   !! size is n+2, complex number size is n/2+1 and we get n reals out.
   !! @param current_state The current model state
@@ -384,7 +392,7 @@ contains
     complex(C_DOUBLE_COMPLEX), dimension(:,:,:), contiguous, pointer, intent(out) :: buffer
 
     call convert_real_to_complex(source_data, buffer)
-   
+
     call perform_c2r_fft(buffer, fft_in_y_buffer,  y_from_x_2_transposition%my_pencil_size(Y_INDEX)-2, &
          y_from_x_2_transposition%my_pencil_size(X_INDEX) * y_from_x_2_transposition%my_pencil_size(Z_INDEX), 4)
 
@@ -394,8 +402,8 @@ contains
   end subroutine transpose_and_backward_fft_in_y
 
   !> Transposes globally to a new pencil decomposition. This goes from the source dimensions a,b,c to b,c,a (forwards) or c,a,b
-  !! (backwards.) It requires multiple steps, first the local data is transposed to c,b,a regardless of direction. 
-  !! then it is communicated via alltoall, each process then assembles its own b,c,a or c,a,b data via contiguising 
+  !! (backwards.) It requires multiple steps, first the local data is transposed to c,b,a regardless of direction.
+  !! then it is communicated via alltoall, each process then assembles its own b,c,a or c,a,b data via contiguising
   !! across blocks as the data layout is nonlinear.
   !! @param transposition_description Description of the transposition
   !! @param source_dims Dimensions of the current pencil that we wish to transpose from, will go from abc to bca
@@ -412,23 +420,24 @@ contains
     integer :: ierr
     real(kind=DEFAULT_PRECISION), dimension(:,:,:), allocatable :: real_temp
     real(kind=DEFAULT_PRECISION), dimension(:), allocatable :: real_temp2
-    
-    
+
+
     allocate(real_temp(size(source_data,3), size(source_data,2), size(source_data,1)), &
          real_temp2(product(transposition_description%my_pencil_size)+1))
 
-    call rearrange_data_for_sending(real_source=source_data, real_target=real_temp)    
+    call rearrange_data_for_sending(real_source=source_data, real_target=real_temp)
 
     call mpi_alltoallv(real_temp, transposition_description%send_sizes, transposition_description%send_offsets, &
          PRECISION_TYPE, real_temp2, transposition_description%recv_sizes, transposition_description%recv_offsets, &
          PRECISION_TYPE, communicator, ierr)
+    call check_mpi_success(ierr, "pencil_fft_mod", "transpose_to_pencil", "mpi_alltoallv")
     call contiguise_data(transposition_description, (/source_dims(3), source_dims(2), source_dims(1)/), direction, &
          source_real_buffer=real_temp2, target_real_buffer=target_data)
-    deallocate(real_temp, real_temp2)   
-  end subroutine transpose_to_pencil  
+    deallocate(real_temp, real_temp2)
+  end subroutine transpose_to_pencil
 
-  !> Contiguises from c,b,a to b,c,a (forwards) or c,a,b (backwards) where these are defined by the source_dims argument. 
-  !! It is not as simple as just swapping the required dimensions, as this is after the mpi alltoall and each block lies 
+  !> Contiguises from c,b,a to b,c,a (forwards) or c,a,b (backwards) where these are defined by the source_dims argument.
+  !! It is not as simple as just swapping the required dimensions, as this is after the mpi alltoall and each block lies
   !! after the previous block running sequentially in a.
   !! @param transposition_description Transposition descriptor
   !! @param source_dims Representation a,b,c of source data, will contiguise to b,a,c
@@ -440,7 +449,7 @@ contains
     type(pencil_transposition), intent(in) :: transposition_description
     real(kind=DEFAULT_PRECISION), dimension(:), intent(in) :: source_real_buffer
     real(kind=DEFAULT_PRECISION), dimension(:,:,:), intent(out) :: target_real_buffer
-    
+
     integer :: number_blocks, i, j, k, n, index_prefix, index_prefix_dim, block_offset, source_index
 
     number_blocks=size(transposition_description%recv_sizes)
@@ -452,13 +461,13 @@ contains
         index_prefix=index_prefix+transposition_description%recv_dims(source_dims(index_prefix_dim), i-1)
         block_offset=block_offset+transposition_description%recv_sizes(i-1)
       end if
-      !Transformation is either cba -> bca (forward) or cab (backwards)       
+      !Transformation is either cba -> bca (forward) or cab (backwards)
       do j=1, transposition_description%recv_dims(source_dims(3), i) ! a
         do k=1, transposition_description%recv_dims(source_dims(1), i) ! c
           do n=1, transposition_description%recv_dims(source_dims(2), i) ! b
             source_index=block_offset+(j-1)* transposition_description%recv_dims(source_dims(1), i)* &
                  transposition_description%recv_dims(source_dims(2), i)+ (n-1)* &
-                 transposition_description%recv_dims(source_dims(1), i)+k            
+                 transposition_description%recv_dims(source_dims(1), i)+k
             if (direction == FORWARD) then
               target_real_buffer(index_prefix+n, k, j)=source_real_buffer(source_index) ! bca
             else
@@ -466,8 +475,8 @@ contains
             end if
           end do
         end do
-      end do      
-    end do    
+      end do
+    end do
   end subroutine contiguise_data
 
   !> Actually performs a forward real to complex FFT
@@ -498,7 +507,7 @@ contains
       call ffte_finalise()
 
     else !use FFTW for FFTs
-    
+
       !if (.not. fftw_plan_initialised(plan_id)) then
       !  fftw_plan(plan_id) = fftw_plan_many_dft_r2c(1, (/row_size/), num_rows, source_data, (/row_size/), 1, row_size, &
     !        transformed_data, (/row_size/), 1, row_size/2+1, FFTW_ESTIMATE)
@@ -600,11 +609,11 @@ contains
         split_remainder = s - split_size * new_pencil_procs_per_dim(i)
         do j=1,new_pencil_procs_per_dim(existing_pencil_dim)
           specific_sizes_per_dim(i,j)=merge(split_size+1, split_size, j .le. split_remainder)
-        end do        
+        end do
       else
         specific_sizes_per_dim(i,:) = existing_pencil_size(i)
       end if
-    end do    
+    end do
   end subroutine determine_my_process_sizes_per_dim
 
   !> Simple helper function to deduce send or receive offsets from the sizes
@@ -618,8 +627,8 @@ contains
     determined_offsets(1)=0
     do i=2,size(source_sizes)
       determined_offsets(i)=determined_offsets(i-1)+source_sizes(i-1)
-    end do    
-  end subroutine determine_offsets_from_size  
+    end do
+  end subroutine determine_offsets_from_size
 
   !> Determines the number of processes in each dimension for the target decomposition. This depends heavily
   !! on the existing decomposition, as we basically contiguise our pencil dimension and decompose the existing
@@ -641,7 +650,7 @@ contains
       else
         determine_pencil_process_dimensions(i)=existing_pencil_procs(i)
       end if
-    end do    
+    end do
   end function determine_pencil_process_dimensions
 
   !> Determines my location for each dimension in the new pencil decomposition. I.e. which block I am
@@ -663,8 +672,8 @@ contains
       else
         determine_my_pencil_location(i)=existing_locations(i)
       end if
-    end do    
-  end function determine_my_pencil_location  
+    end do
+  end function determine_my_pencil_location
 
   !> Concatenates sizes in multiple dimensions for each target process (in a row or column) into a product of
   !! that. This represents all the dimension sizes per process
@@ -677,10 +686,10 @@ contains
 
     do i=1,size(dims, 2)
       concatenated_dim_sizes(i)=product(dims(:,i))
-    end do    
-  end subroutine concatenate_dimension_sizes  
+    end do
+  end subroutine concatenate_dimension_sizes
 
-  !> Determines the sizes per dimension on the matching process either to receive from (forward transposition) or send to 
+  !> Determines the sizes per dimension on the matching process either to receive from (forward transposition) or send to
   !! (backwards transposition) each source process. Not only does this depend on the
   !! my pencil sizes, but it also depends on the amount of data that the source process has to send over
   !! @param new_pencil_dim The dimension for the new pencil decomposition
@@ -702,8 +711,8 @@ contains
         else
           specific_sizes_per_dim(j, i)=my_pencil_size(j)
         end if
-      end do      
-    end do    
+      end do
+    end do
   end subroutine determine_matching_process_dimensions
 
   !> Creates an initial transposition representation of the Z pencil that MONC is normally decomposed in. This is then
@@ -719,7 +728,7 @@ contains
   end function create_initial_transposition_description
 
   !> Deduces the size of my (local) pencil based upon the new decomposition. This depends heavily on the current
-  !! pencil decomposition, the new pencil dimension is the global size, the existing pencil dimension becomes 
+  !! pencil decomposition, the new pencil dimension is the global size, the existing pencil dimension becomes
   !! decomposed based on the number of processes in that dimension. The third dimension remains unchanged.
   !! @param new_pencil_dim Dimension for the new pencil decomposition
   !! @param pencil_process_layout The processes per dimension layout for the new decomposition
@@ -752,11 +761,11 @@ contains
         if (is_extended_dimension(i, extended_dimensions)) s=(s/2+1)*2
         split_size=s/pencil_process_layout(i)
         split_remainder=s - split_size * pencil_process_layout(i)
-        determine_pencil_size(i)=merge(split_size+1, split_size, my_pencil_location(i)+1 .le. split_remainder)        
-      else        
-        determine_pencil_size(i)=existing_transposition%my_pencil_size(i)       
-      end if      
-    end do    
+        determine_pencil_size(i)=merge(split_size+1, split_size, my_pencil_location(i)+1 .le. split_remainder)
+      else
+        determine_pencil_size(i)=existing_transposition%my_pencil_size(i)
+      end if
+    end do
   end function determine_pencil_size
 
   !> Determines whether or not the specific dimension is in the list of extended dimensions
@@ -771,11 +780,11 @@ contains
       if (extended_dimensions(i) == dimension) then
         is_extended_dimension=.true.
         return
-      end if      
+      end if
     end do
     is_extended_dimension=.false.
   end function is_extended_dimension
-  
+
   !> Transforms real process dimension sizes into their real after FFT complex->real transformation. The way this works is that
   !! it goes from n to (n/2+1)*2 numbers which is distributed amongst the processes deterministically
   !! @param process_dim_sizes Real process dimension sizes
@@ -791,10 +800,10 @@ contains
     remainder=temp_total - split_size*size(process_dim_sizes)
 
     normal_to_extended_process_dim_sizes=split_size
-    normal_to_extended_process_dim_sizes(1:remainder)=split_size+1    
+    normal_to_extended_process_dim_sizes(1:remainder)=split_size+1
   end function normal_to_extended_process_dim_sizes
 
-  !> Converts complex representation to its real data counterpart and is called after each forward FFT. 
+  !> Converts complex representation to its real data counterpart and is called after each forward FFT.
   !! After a r2c FFT, there are n/2+1 complex numbers - which means that there will be more real numbers in Fourier space
   !! than are provided into the forward FFT call (due to the extra +1). Note that the real size n will always be complex size * 2
   !! This always unpacks the complex dimension in the first dimension
@@ -825,7 +834,7 @@ contains
   subroutine convert_real_to_complex(real_data, complex_data)
     real(kind=DEFAULT_PRECISION), dimension(:,:,:), intent(in) :: real_data
     complex(C_DOUBLE_COMPLEX), dimension(:,:,:), contiguous, pointer, intent(out) :: complex_data
-    
+
     integer :: i, j, k
 
     complex_data=cmplx(0.0d0, 0.0d0, kind=C_DOUBLE_COMPLEX)
@@ -839,8 +848,8 @@ contains
     end do
   end subroutine convert_real_to_complex
 
-  !> Determines my global start coordinate in Fourier space. 
-  !! This is required for cos y and cos x calculation which is fed into the tridiagonal solver. After the forward FFTs, 
+  !> Determines my global start coordinate in Fourier space.
+  !! This is required for cos y and cos x calculation which is fed into the tridiagonal solver. After the forward FFTs,
   !! each process has ((n/2+1)/p+r) * 2 elements, where p is the number of processes and r
   !! is the uneven process remainder (1 or 0 depending on p). Therefore some processes will have t elements, and some t-2 elements
   !! to feed into the solver
@@ -855,10 +864,9 @@ contains
 
     complex_size=(current_state%global_grid%size(dimension)/2+1)*2
     distributed_size=complex_size / current_state%parallel%dim_sizes(dimension)
-    remainder=complex_size - distributed_size * current_state%parallel%dim_sizes(dimension) 
+    remainder=complex_size - distributed_size * current_state%parallel%dim_sizes(dimension)
     larger_nums=min(remainder, current_state%parallel%my_coords(dimension))
     smaller_nums=current_state%parallel%my_coords(dimension)-remainder
     deduce_my_global_start=((distributed_size+1)*larger_nums + merge(distributed_size*smaller_nums, 0, smaller_nums .gt. 0)) + 1
   end function deduce_my_global_start
-end module pencil_fft_mod    
-    
+end module pencil_fft_mod

@@ -21,6 +21,7 @@ module iobridge_mod
        build_mpi_type_field_description, build_mpi_type_definition_description, populate_mpi_type_extents, append_mpi_datatype, &
        get_mpi_datatype_from_internal_representation, pack_scalar_field, pack_array_field, pack_map_field
   use mpi, only : MPI_COMM_WORLD, MPI_INT, MPI_BYTE, MPI_REQUEST_NULL, MPI_STATUSES_IGNORE, MPI_STATUS_IGNORE, MPI_STATUS_SIZE
+  use mpi_error_handler_mod, only : check_mpi_success
   use q_indices_mod, only : q_metadata_type, get_max_number_q_indices, get_indices_descriptor, get_number_active_q_indices
   use tracers_mod, only : get_tracer_name, reinitialise_trajectories, traj_interval
 
@@ -62,7 +63,7 @@ module iobridge_mod
 
   public iobridge_get_descriptor
 
-contains 
+contains
 
   type(component_descriptor_type) function iobridge_get_descriptor()
     iobridge_get_descriptor%name="iobridge"
@@ -100,9 +101,11 @@ contains
     call send_monc_specific_data_to_server(current_state, mpi_type_data_sizing_description)
 
     call mpi_type_free(mpi_type_data_sizing_description, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "init_callback", "mpi_type_free")
     call mpi_type_free(mpi_type_definition_description, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "init_callback", "mpi_type_free")
     call mpi_type_free(mpi_type_field_description, ierr)
-
+    call check_mpi_success(ierr, "iobridge_mod", "init_callback", "mpi_type_free")
     call build_mpi_data_types()
 
     call setup_timing_parameters(current_state)
@@ -147,7 +150,7 @@ contains
         where(current_state%sampling(:)%active)                                        &
           current_state%sampling(:)%next_time = current_state%sampling(:)%next_time +  &
                                                 current_state%sampling(:)%interval
-  
+
       ! force_output_on_interval
       else if (current_state%force_output_on_interval) then
         do i=1,size(current_state%sampling(:))
@@ -199,6 +202,7 @@ contains
          data_definitions(data_index)%dump_requests(2) .ne. MPI_REQUEST_NULL) then
       ! Here wait for previous data dump to complete (consider extending to using buffers for performance)
       call mpi_waitall(2, data_definitions(data_index)%dump_requests, MPI_STATUSES_IGNORE, ierr)
+      call check_mpi_success(ierr, "iobridge_mod", "send_data_to_io_server", "mpi_waitall")
     end if
 
     ! Pack the send buffer and send it to the IO server
@@ -208,10 +212,12 @@ contains
     call mpi_issend(data_definitions(data_index)%command_data, 1, MPI_INT, &
             current_state%parallel%corresponding_io_server_process, &
          COMMAND_TAG, MPI_COMM_WORLD, data_definitions(data_index)%dump_requests(1), ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "send_data_to_io_server", "mpi_issend")
     call mpi_issend(data_definitions(data_index)%send_buffer, 1, data_definitions(data_index)%mpi_datatype, &
          current_state%parallel%corresponding_io_server_process, DATA_TAG+data_index, MPI_COMM_WORLD, &
          data_definitions(data_index)%dump_requests(2), ierr)
-  end subroutine send_data_to_io_server  
+    call check_mpi_success(ierr, "iobridge_mod", "send_data_to_io_server", "mpi_issend")
+  end subroutine send_data_to_io_server
 
   !> Finalisation call back, called at the end of the model run
   !! @param current_state The current model state
@@ -223,19 +229,22 @@ contains
     if (.not. io_server_enabled) return
     in_finalisation_callback=.true.
 
-    do i=1, size(data_definitions)      
+    do i=1, size(data_definitions)
       if (data_definitions(i)%send_on_terminate) then
         call send_data_to_io_server(current_state, i)
       end if
       if (data_definitions(i)%dump_requests(1) .ne. MPI_REQUEST_NULL .or. &
            data_definitions(i)%dump_requests(2) .ne. MPI_REQUEST_NULL) then
         call mpi_waitall(2, data_definitions(i)%dump_requests, MPI_STATUSES_IGNORE, ierr)
+        call check_mpi_success(ierr, "iobridge_mod", "finalisation_callback", "mpi_waitall")
       end if
       if (allocated(data_definitions(i)%send_buffer)) deallocate(data_definitions(i)%send_buffer)
       call mpi_type_free(data_definitions(i)%mpi_datatype, ierr)
+      call check_mpi_success(ierr, "iobridge_mod", "finalisation_callback", "mpi_type_free")
     end do
     call mpi_send(DEREGISTER_COMMAND, 1, MPI_INT, current_state%parallel%corresponding_io_server_process, &
          COMMAND_TAG, MPI_COMM_WORLD, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "finalisation_callback", "mpi_send")
   end subroutine finalisation_callback
 
   !> Builds the MPI data types that correspond to the field descriptions and sizings
@@ -246,7 +255,7 @@ contains
       dump_send_buffer_size=build_mpi_data_type_for_definition(data_definitions(i))
       data_definitions(i)%dump_requests=(/MPI_REQUEST_NULL, MPI_REQUEST_NULL/)
       allocate(data_definitions(i)%send_buffer(dump_send_buffer_size))
-    end do    
+    end do
   end subroutine build_mpi_data_types
 
   !> Builds the MPI data type for a specific definition with sizing information
@@ -269,7 +278,7 @@ contains
     field_ignores=0
     do i=1, specific_data_definition%number_of_data_fields
       if (data_type == 0) then
-        prev_data_type=data_type        
+        prev_data_type=data_type
         data_type=specific_data_definition%fields(i)%data_type
       else
         if (data_type .ne. specific_data_definition%fields(i)%data_type) then
@@ -279,7 +288,7 @@ contains
           field_start=i
           field_array_sizes=0
           field_ignores=0
-          prev_data_type=data_type                   
+          prev_data_type=data_type
           data_type=specific_data_definition%fields(i)%data_type
           type_counts=type_counts+1
         end if
@@ -314,7 +323,7 @@ contains
           field_size_info=get_sendable_field_sizing(specific_data_definition%fields(i)%name, field_found)
           specific_data_definition%fields(i)%enabled=field_found
           if (.not. field_found) field_ignores=field_ignores+1
-        end if        
+        end if
       end if
     end do
     if (field_start .le. i-1) then
@@ -324,9 +333,12 @@ contains
       type_counts=type_counts+1
     end if
 
-    call mpi_type_struct(type_counts, block_counts, offsets, old_types, specific_data_definition%mpi_datatype, ierr) 
+    call mpi_type_struct(type_counts, block_counts, offsets, old_types, specific_data_definition%mpi_datatype, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "build_mpi_data_type_for_definition", "mpi_type_struct")
     call mpi_type_commit(specific_data_definition%mpi_datatype, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "build_mpi_data_type_for_definition", "mpi_type_commit")
     call mpi_type_size(specific_data_definition%mpi_datatype, tempsize, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "build_mpi_data_type_for_definition", "mpi_type_size")
     build_mpi_data_type_for_definition=tempsize
   end function build_mpi_data_type_for_definition
 
@@ -342,7 +354,7 @@ contains
     published_field_descriptors=get_all_component_published_fields()
     do i=1, c_size(published_field_descriptors)
       call populate_component_public_field(current_state, c_get_string(published_field_descriptors, i))
-    end do    
+    end do
   end subroutine populate_sendable_fields
 
   !> Populates the field information for a specific publically available field offered by one of the components
@@ -369,7 +381,7 @@ contains
       generic_data=>field_sizing
       call c_put_generic(sendable_fields, field_name, generic_data, .false.)
     end if
-  end subroutine populate_component_public_field  
+  end subroutine populate_component_public_field
 
   !> Populates the globally visible sendable fields which is a key value pair mapping between name and description of that field
   !! @param current_state The current model state
@@ -432,7 +444,7 @@ contains
     raw_generic=>generate_sendable_description(z_size, y_size, x_size)
     call c_put_generic(sendable_fields, "w", raw_generic, .false.)
     call c_put_generic(sendable_fields, "zw", raw_generic, .false.)
-#endif          
+#endif
     if (current_state%number_q_fields .gt. 0) then
       raw_generic=>generate_sendable_description(z_size, y_size, x_size, current_state%number_q_fields)
       call c_put_generic(sendable_fields, "q", raw_generic, .false.)
@@ -455,7 +467,7 @@ contains
     end if
     if (current_state%p%active) then
       raw_generic=>generate_sendable_description(z_size, y_size, x_size)
-      call c_put_generic(sendable_fields, "p", raw_generic, .false.)   
+      call c_put_generic(sendable_fields, "p", raw_generic, .false.)
     end if
     if (current_state%n_tracers .gt. 0) then
       raw_generic=>generate_sendable_description(z_size, y_size, x_size, current_state%n_tracers)
@@ -468,7 +480,7 @@ contains
        call c_put_generic(sendable_fields, "sth_lw", raw_generic, .false.)
        call c_put_generic(sendable_fields, "sth_sw", raw_generic, .false.)
     endif
-       
+
     if (is_component_enabled(current_state%options_database, "pdf_analysis")) then
       if (allocated(current_state%global_grid%configuration%vertical%w_up)) then
         raw_generic=>generate_sendable_description(z_size)
@@ -479,9 +491,9 @@ contains
         raw_generic=>generate_sendable_description(z_size)
         call c_put_generic(sendable_fields, "w_dwn", raw_generic, .false.)
       end if
-    end if 
+    end if
 
-  end subroutine populate_globally_visible_sendable_fields  
+  end subroutine populate_globally_visible_sendable_fields
 
   !> Generates a sendable description based upon the dimension information supplied, missing arguments means that dimension
   !! does not exist
@@ -542,9 +554,10 @@ contains
     allocate(buffer(buffer_size))
     request_handles(2)=send_general_monc_information_to_server(current_state, buffer)
     call mpi_waitall(2, request_handles, MPI_STATUSES_IGNORE, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "send_monc_specific_data_to_server", "mpi_waitall")
     deallocate(data_description)
     deallocate(buffer)
-  end subroutine send_monc_specific_data_to_server  
+  end subroutine send_monc_specific_data_to_server
 
   !> Assembles all the data field sizing information and sends this to the IO server
   !! @param current_state The current model state
@@ -559,7 +572,7 @@ contains
 
     integer :: ierr, i, next_index, request_handle
     character(len=STRING_LENGTH) :: field_name
-    
+
     call package_local_monc_decomposition_into_descriptions(current_state, data_description)
     next_index=5
     do i=1, number_unique_fields
@@ -567,11 +580,12 @@ contains
       if (c_contains(sendable_fields, field_name)) then
         call assemble_individual_description(data_description, next_index, field_name, get_sendable_field_sizing(field_name))
         next_index=next_index+1
-      end if      
-    end do    
+      end if
+    end do
 
     call mpi_isend(data_description, next_index-1, mpi_type_data_sizing_description, &
          current_state%parallel%corresponding_io_server_process, DATA_TAG, MPI_COMM_WORLD, request_handle, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "send_data_field_sizes_to_server", "mpi_isend")
     send_data_field_sizes_to_server=request_handle
   end function send_data_field_sizes_to_server
 
@@ -582,25 +596,26 @@ contains
   integer function send_general_monc_information_to_server(current_state, buffer)
     type(model_state_type), target, intent(inout) :: current_state
     character, dimension(:), intent(inout) :: buffer
-    
+
     character(len=STRING_LENGTH) :: q_field_name, tracer_name, cd_field_name
     type(q_metadata_type) :: q_meta_data
-    integer :: current_loc, n, ierr, request_handle    
-    
+    integer :: current_loc, n, ierr, request_handle
+
     current_loc=1
     current_loc=pack_array_field(buffer, current_loc, real_array_1d=current_state%global_grid%configuration%vertical%zn)
     if (current_state%number_q_fields .gt. 0) then
       do n=1, current_state%number_q_fields
-        q_meta_data=get_indices_descriptor(n)       
+        q_meta_data=get_indices_descriptor(n)
         if (q_meta_data%l_used) then
           q_field_name=q_meta_data%name
         else
           q_field_name="qfield_"//trim(conv_to_string(n))
-        end if        
+
+        end if
         current_loc=pack_scalar_field(buffer, current_loc, string_value=q_field_name)
       end do
     end if
-    
+
     if (current_state%n_tracers .gt. 0) then
       do n=1, current_state%n_tracers
         tracer_name=get_tracer_name(n, current_state%traj_tracer_index, &
@@ -609,10 +624,11 @@ contains
         current_loc=pack_scalar_field(buffer, current_loc, string_value=tracer_name)
       end do
     end if
-    
+
     current_loc=pack_array_field(buffer, current_loc, real_array_1d=current_state%global_grid%configuration%vertical%z)
 
-    do n=1,ncond*2 
+    do n=1,ncond*2
+
       if (n .le. ncond) then
         cd_field_name = cond_request(n)
         current_loc=pack_scalar_field(buffer, current_loc, string_value=cd_field_name)
@@ -624,7 +640,9 @@ contains
         cd_field_name = ".not. "//trim(cond_long(n-ncond))
         current_loc=pack_scalar_field(buffer, current_loc, string_value=cd_field_name)
       end if
-    end do    
+
+    end do
+
     do n=1,ndiag
       cd_field_name = diag_request(n)
       current_loc=pack_scalar_field(buffer, current_loc, string_value=cd_field_name)
@@ -634,13 +652,16 @@ contains
 
 
     call mpi_isend(buffer, current_loc-1, MPI_BYTE, current_state%parallel%corresponding_io_server_process, &
-         DATA_TAG, MPI_COMM_WORLD, request_handle, ierr)    
+
+         DATA_TAG, MPI_COMM_WORLD, request_handle, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "send_general_monc_information_to_server", "mpi_isend")
     send_general_monc_information_to_server=request_handle
-  end function send_general_monc_information_to_server  
+  end function send_general_monc_information_to_server
 
   !> Packages the local MONC decomposition information into descriptions for communication
   !! @param current_state The current model state
-  !! @param data_description The data description to pack into
+  !! @param data_description THe data description to pack into
+
   subroutine package_local_monc_decomposition_into_descriptions(current_state, data_description)
     type(model_state_type), target, intent(inout) :: current_state
     type(data_sizing_description_type), dimension(:), intent(inout) :: data_description
@@ -663,7 +684,7 @@ contains
     sizing_info%number_dimensions=1
     sizing_info%dimensions(1)=get_number_active_q_indices()
     call assemble_individual_description(data_description, 4, NUMBER_Q_INDICIES_KEY, sizing_info)
-  end subroutine package_local_monc_decomposition_into_descriptions  
+  end subroutine package_local_monc_decomposition_into_descriptions
 
   !> Retrieves the sizing information associated with a specific field
   !! @param field_name The field name to look up
@@ -698,7 +719,8 @@ contains
         get_component_field_descriptor=generic
       end select
     end if
-  end function get_component_field_descriptor   
+  end function get_component_field_descriptor
+
 
   !> Will assemble an individual description of an array data field
   !! @param data_description The data structure used to describe the size of arrays
@@ -718,13 +740,15 @@ contains
     data_description(index)%field_name=field_name
     data_description(index)%dimensions=field_sizing_description%number_dimensions
     data_description(index)%dim_sizes=field_sizing_description%dimensions
-  end subroutine assemble_individual_description 
-  
+
+  end subroutine assemble_individual_description
+
   !> Registers this MONC with the corresponding IO server. This will encapsulate the entire protocol, which is sending the
   !! registration command, receiving the data and field definitions from the IO server and then sending back the sizing
   !! for the fields that this MONC will contribute.
-  !! Additionally, this receives the unique sampling/output interval pairs from the IO server and 
+  !! Additionally, this receives the unique sampling/output interval pairs from the IO server and
   !! stores them in the current_state%sampling structure.
+
   !! @param current_state The current model state
   !! @param mpi_type_definition_description MPI data type for data definition message
   !! @param mpi_type_field_description MPI data type for field definition message
@@ -740,20 +764,22 @@ contains
 
     call mpi_send(REGISTER_COMMAND, 1, MPI_INT, current_state%parallel%corresponding_io_server_process, &
          COMMAND_TAG, MPI_COMM_WORLD, ierr)
-
+    call check_mpi_success(ierr, "iobridge_mod", "register_with_io_server", "mpi_send")
     call mpi_probe(current_state%parallel%corresponding_io_server_process, DATA_TAG, MPI_COMM_WORLD, status, ierr)
-
+    call check_mpi_success(ierr, "iobridge_mod", "register_with_io_server", "mpi_probe")
     call mpi_get_count(status, mpi_type_definition_description, number_defns, ierr)
-
+    call check_mpi_success(ierr, "iobridge_mod", "register_with_io_server", "mpi_get_count")
     allocate(definition_descriptions(number_defns))
 
     call mpi_recv(definition_descriptions, number_defns, mpi_type_definition_description, &
          current_state%parallel%corresponding_io_server_process, DATA_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "register_with_io_server", "mpi_recv")
     number_fields=get_total_number_of_fields(definition_descriptions, number_defns)
 
     allocate(field_descriptions(number_fields))
     call mpi_recv(field_descriptions, number_fields, mpi_type_field_description, &
          current_state%parallel%corresponding_io_server_process, DATA_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE, ierr)
+    call check_mpi_success(ierr, "iobridge_mod", "register_with_io_server", "mpi_recv")
     call populate_data_definition_configuration(definition_descriptions, number_defns, field_descriptions, number_fields)
     deallocate(definition_descriptions)
 
@@ -789,7 +815,7 @@ contains
     allocate(current_state%sampling(psize))
     current_state%sampling(1:count(mask))%interval = pack(tmparr(:,1), mask)
 
-    ! For each unique diagnostic sample interval, 
+    ! For each unique diagnostic sample interval,
     !   find all non-zero, associated output intervals and store
     do i=1,size(current_state%sampling(1:count(mask)))
       mask(:) = tmparr(:,1) == current_state%sampling(i)%interval .and.     &
@@ -817,7 +843,7 @@ contains
                  "divisible by the smallest sampling interval ("//&
                  trim(conv_to_string(minval(current_state%sampling(:)%interval)))//&
                  " s).  This rule applies system-wide (diagnostics, radiation, checkpoints, etc.")
-                      
+
       end if
     end if
 
@@ -836,7 +862,7 @@ contains
     get_total_number_of_fields=0
     do i=1, number_defns
       get_total_number_of_fields=get_total_number_of_fields+definition_descriptions(i)%number_fields
-    end do    
+    end do
   end function get_total_number_of_fields
 
   !> Based upon the received data and field definitions this will configure the IO bridge internal representation of these
@@ -866,7 +892,7 @@ contains
       field_index=data_definitions(definition_index)%number_of_data_fields+1
       data_definitions(definition_index)%number_of_data_fields=field_index
       data_definitions(definition_index)%fields(field_index)%name=field_descriptions(i)%field_name
-      data_definitions(definition_index)%fields(field_index)%field_type=field_descriptions(i)%field_type      
+      data_definitions(definition_index)%fields(field_index)%field_type=field_descriptions(i)%field_type
       data_definitions(definition_index)%fields(field_index)%data_type=field_descriptions(i)%data_type
       data_definitions(definition_index)%fields(field_index)%optional=field_descriptions(i)%optional
       if (field_descriptions(i)%optional .or. field_descriptions(i)%field_type == ARRAY_FIELD_TYPE .or. &
@@ -893,7 +919,7 @@ contains
         end if !compare
       end if !enabled
 
-    end do    
+    end do
   end subroutine populate_data_definition_configuration
 
   !> Looks up a specific definition based upon its name and returns the index
@@ -910,7 +936,7 @@ contains
       end if
     end do
     get_definition_index=-1
-  end function get_definition_index  
+  end function get_definition_index
 
   !> Packs the current state into the send buffer. This iterates through each field in the data description and adds it to the
   !! send buffer
@@ -944,7 +970,7 @@ contains
         current_state%reinit_tracer=.true.
       end if
     end if
-      
+
   end subroutine pack_send_buffer
 
   !> Packs scalar fields into the send bufer
@@ -1068,9 +1094,9 @@ contains
            current_buffer_point, real_value=published_value%scalar_real)
     else if (field_descriptor%data_type == COMPONENT_INTEGER_DATA_TYPE) then
       handle_component_field_scalar_packing_into_send_buffer=pack_scalar_field(data_definition%send_buffer, &
-           current_buffer_point, int_value=published_value%scalar_int)         
+           current_buffer_point, int_value=published_value%scalar_int)
     end if
-  end function handle_component_field_scalar_packing_into_send_buffer 
+  end function handle_component_field_scalar_packing_into_send_buffer
 
   !> Packs map fields into the send buffer
   !! @param current_state The current model state
@@ -1099,8 +1125,8 @@ contains
       end do
       pack_map_into_send_buffer=pack_map_field(data_definition%send_buffer, current_buffer_point, q_indicies_map)
       call c_free(q_indicies_map)
-    end if    
-  end function pack_map_into_send_buffer  
+    end if
+  end function pack_map_into_send_buffer
 
   !> Packs array fields into the send bufer
   !! @param current_state The current model state
@@ -1210,7 +1236,7 @@ contains
            current_state%local_grid)
     else if (field%name .eq. "sth_lw") then
       pack_array_into_send_buffer=pack_prognostic_flow_field(data_definition%send_buffer,  &
-            current_state%sth_lw, current_buffer_point, current_state%local_grid) 
+            current_state%sth_lw, current_buffer_point, current_state%local_grid)
     else if (field%name .eq. "sth_sw") then
       pack_array_into_send_buffer=pack_prognostic_flow_field(data_definition%send_buffer,  &
             current_state%sth_sw, current_buffer_point, current_state%local_grid)
@@ -1225,7 +1251,7 @@ contains
 !!$            current_state%sth_sw, current_buffer_point, current_state%local_grid)
 !!$    else if (field%name .eq. "lww_down_surf") then
 !!$      pack_array_into_send_buffer=pack_prognostic_flow_field(data_definition%send_buffer,  &
-!!$            current_state%sth_sw, current_buffer_point, current_state%local_grid)  
+!!$            current_state%sth_sw, current_buffer_point, current_state%local_grid)
     else
        ! Handle component field here
        pack_array_into_send_buffer=handle_component_field_array_packing_into_send_buffer(current_state, &
@@ -1275,7 +1301,7 @@ contains
 
   !> Packs the data of a specific prognostic field into a buffer
   !! @param buffer The buffer to pack the field into
-  !! @param prognostic The prognostic field  
+  !! @param prognostic The prognostic field
   !! @param start_offset The starting offset to write into the buffer
   !! @param local_grid Description of the local grid
   !! @returns The next location in the buffer to write to (next start offset)
@@ -1283,7 +1309,7 @@ contains
     character, dimension(:), allocatable, intent(inout) :: buffer
     type(prognostic_field_type), intent(inout) :: prognostic
     integer, intent(in) :: start_offset
-    type(local_grid_type), intent(inout) :: local_grid    
+    type(local_grid_type), intent(inout) :: local_grid
 
     integer :: target_end
 
@@ -1295,7 +1321,7 @@ contains
          local_grid%local_domain_start_index(X_INDEX): local_grid%local_domain_end_index(X_INDEX)), &
          buffer(start_offset : target_end))
     pack_prognostic_flow_field=target_end+1
-  end function pack_prognostic_flow_field  
+  end function pack_prognostic_flow_field
 
   !> Packs the Q fields into the send buffer
   !! @param buffer The send buffer to pack into
@@ -1308,7 +1334,7 @@ contains
     character, dimension(:), allocatable, intent(inout) :: buffer
     type(prognostic_field_type), dimension(:), intent(inout) :: q_fields
     integer, intent(in) :: start_offset, number_q_fields
-    type(local_grid_type), intent(inout) :: local_grid    
+    type(local_grid_type), intent(inout) :: local_grid
 
     integer :: target_end, i, current_starting_index
 
@@ -1322,10 +1348,10 @@ contains
            local_grid%local_domain_start_index(Y_INDEX): local_grid%local_domain_end_index(Y_INDEX), &
            local_grid%local_domain_start_index(X_INDEX): local_grid%local_domain_end_index(X_INDEX)), &
            buffer(current_starting_index : target_end))
-      current_starting_index=target_end+1      
+      current_starting_index=target_end+1
     end do
     pack_q_fields=target_end+1
-  end function pack_q_fields   
+  end function pack_q_fields
 
 
   !> Reads in and checks the timing options
@@ -1380,7 +1406,7 @@ contains
     integer :: sample_nts, next_sample_time, i
 
     ! Set up the sampling times for time_basis or force_output_on_interval
-    if (current_state%time_basis) then 
+    if (current_state%time_basis) then
       dtmmin = options_get_real(current_state%options_database, "cfl_dtmmin")
       current_state%sampling(:)%next_time = ((int(current_state%time + dtmmin)             &
                                                / current_state%sampling(:)%interval) + 1)  &
@@ -1393,7 +1419,7 @@ contains
                                                  / current_state%sampling(i)%output(:)) + 1)  &
                                               * current_state%sampling(i)%output(:))
         if (size(current_state%sampling(i)%output(:)) .eq. 0) then
-          ! There are no specified output intervals for this sampling interval, so we set the 
+          ! There are no specified output intervals for this sampling interval, so we set the
           ! next "output time" (which could change dtm) to be the largest possible integer.
           ! This ensures that in these cases (possibly for a non-zero checkpoint_frequency or
           ! a radiation interval) the samples simply occur on the timestep interval, and the
@@ -1401,10 +1427,10 @@ contains
           ! checkpoint_frequency, though, checkpoints will be written at that sampling frequency
           ! without any consideration for the model time.
           ! Further, note that this only needs to happen here.  Updates to %next_time in this
-          ! module's timestep_callback only occur when writing at an existing %next_time, which 
+          ! module's timestep_callback only occur when writing at an existing %next_time, which
           ! won't reasonably be reached in this case.
           current_state%sampling(i)%next_time = huge(current_state%sampling(i)%next_time)
-        else 
+        else
           current_state%sampling(i)%next_time = minval(((int(current_state%time + dtmmin)         &
                                                      / current_state%sampling(i)%output(:)) + 1)  &
                                                            * current_state%sampling(i)%output(:) )
@@ -1422,7 +1448,7 @@ contains
       end do
     end if ! time_basis=.true. or force_output_on_interval=.true.
 
-    ! If we are restarting from a NON-normal_step under time_basis, 
+    ! If we are restarting from a NON-normal_step under time_basis,
     !   then the next sample steps need to be set now.
     ! This is similar to the code in cfltest's evaluate_time_basis.
     if (.not. current_state%normal_step .and. current_state%time_basis) then
@@ -1449,7 +1475,7 @@ contains
           current_state%sampling(:)%next_step = current_state%timestep
       end if ! check for passing next_sample_time in one step
     end if ! check for reconfig_run with time_basis
-        
+
 
   end subroutine setup_timing_parameters
 

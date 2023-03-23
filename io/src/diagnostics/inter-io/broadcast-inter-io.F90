@@ -15,6 +15,7 @@ module broadcast_inter_io_mod
   use inter_io_specifics_mod, only : handle_completion, register_inter_io_communication, find_inter_io_from_name, &
        package_inter_io_communication_message, unpackage_inter_io_communication_message
   use mpi, only : MPI_DOUBLE_PRECISION, MPI_INT, MPI_ANY_SOURCE, MPI_REQUEST_NULL, MPI_STATUSES_IGNORE, MPI_CHARACTER, MPI_BYTE
+  use mpi_error_handler_mod, only : check_mpi_success
   use mpi_communication_mod, only : lock_mpi, unlock_mpi, waitall_for_mpi_requests
   implicit none
 
@@ -127,7 +128,7 @@ contains
     call check_thread_status(forthread_rwlock_unlock(broadcast_statuses_rwlock))
   end function check_broadcast_inter_io_for_completion
 
-  !> Handles receiving data from another IO server and processing this. If the request has already been registered (with a 
+  !> Handles receiving data from another IO server and processing this. If the request has already been registered (with a
   !! callback) then this simply calls out. Otherwise it has to cache the data and awaits a thread calling the broadcast
   !! to call out to the callback
   !! @param io_configuration The IO server configuration
@@ -136,7 +137,7 @@ contains
   subroutine handle_recv_data_from_io_server(io_configuration, data_buffer, inter_io_index)
     type(io_configuration_type), intent(inout) :: io_configuration
     character, dimension(:), intent(inout) :: data_buffer
-    integer, intent(in) :: inter_io_index    
+    integer, intent(in) :: inter_io_index
 
     type(inter_io_broadcast), pointer :: broadcast_item
     real(kind=DEFAULT_PRECISION), dimension(:), allocatable :: data_values
@@ -146,7 +147,7 @@ contains
     call unpackage_inter_io_communication_message(data_buffer, field_name, timestep, data_values)
 
     broadcast_item=>find_or_add_broadcast_item(field_name, timestep)
-    
+
     if (associated(broadcast_item%completion_procedure)) then
       call check_thread_status(forthread_mutex_lock(broadcast_item%mutex))
       broadcast_item%handled=.true.
@@ -160,7 +161,7 @@ contains
     end if
     if (allocated(data_values)) deallocate(data_values)
   end subroutine handle_recv_data_from_io_server
-  
+
   !> Performs an inter IO broadcast of data from the root to all other IO servers. Note that this is on the IO server (and not
   !! MONC level) so might require some translation between the user's logical view and this view. Broadcasts are only issued once
   !! for a specific field_name and timestep pair.
@@ -175,17 +176,17 @@ contains
        timestep, completion_procedure)
     type(io_configuration_type), intent(inout) :: io_configuration
     real(kind=DOUBLE_PRECISION), dimension(:) :: field_values
-    integer, intent(in) :: field_size, root, timestep    
+    integer, intent(in) :: field_size, root, timestep
     character(len=*), intent(in) :: field_name
     procedure(handle_completion) :: completion_procedure
-    
+
     type(inter_io_broadcast), pointer :: broadcast_item
     integer :: inter_io_comm_index, i, ierr
 
     call clean_broadcast_progress_if_needed()
     inter_io_comm_index=find_inter_io_from_name(io_configuration, MY_INTER_IO_NAME)
-    broadcast_item=>find_or_add_broadcast_item(field_name, timestep, completion_procedure)    
-    
+    broadcast_item=>find_or_add_broadcast_item(field_name, timestep, completion_procedure)
+
     call check_thread_status(forthread_mutex_lock(broadcast_item%mutex))
     if (io_configuration%my_io_rank == root .and. .not. broadcast_item%handled) then
       broadcast_item%handled=.true.
@@ -199,6 +200,7 @@ contains
           call mpi_isend(broadcast_item%send_buffer, size(broadcast_item%send_buffer), MPI_BYTE, i, &
                io_configuration%inter_io_communications(inter_io_comm_index)%message_tag, &
                io_configuration%io_communicator, broadcast_item%send_requests(i+1), ierr)
+          call check_mpi_success(ierr, "broadcast_inter_io_mod", "perform_inter_io_broadcast", "mpi_isend")
           call unlock_mpi()
         else
           broadcast_item%send_requests(i+1)=MPI_REQUEST_NULL
@@ -216,7 +218,7 @@ contains
     call check_thread_status(forthread_mutex_unlock(broadcast_item%mutex))
   end subroutine perform_inter_io_broadcast
 
-  !> Issues the call into the thread pool to call the completion procedure, this runs in a seperate thread and ensures the 
+  !> Issues the call into the thread pool to call the completion procedure, this runs in a seperate thread and ensures the
   !! semantics of one IO server or many with message ordering are independent
   !! @param field_name The name of the field
   !! @param timestep The timestep
@@ -283,12 +285,12 @@ contains
     bcast_count=bcast_count+1
     if (bcast_clean_reduction_count + PERFORM_CLEAN_EVERY .lt. bcast_count) then
       bcast_clean_reduction_count=bcast_count
-      call check_thread_status(forthread_mutex_unlock(bcast_count_mutex))   
+      call check_thread_status(forthread_mutex_unlock(bcast_count_mutex))
       call clean_broadcast_progress()
     else
-      call check_thread_status(forthread_mutex_unlock(bcast_count_mutex))   
+      call check_thread_status(forthread_mutex_unlock(bcast_count_mutex))
     end if
-  end subroutine clean_broadcast_progress_if_needed  
+  end subroutine clean_broadcast_progress_if_needed
 
   !> Performs a clean of the broadcast progresses that no longer need to be stored
   subroutine clean_broadcast_progress()
@@ -314,6 +316,7 @@ contains
           call lock_mpi()
           call mpi_testall(size(specific_broadcast_item_at_index%send_requests), specific_broadcast_item_at_index%send_requests, &
                completion_flag, MPI_STATUSES_IGNORE, ierr)
+          call check_mpi_success(ierr, "broadcast_inter_io_mod", "clean_broadcast_progress", "mpi_testall")
           call unlock_mpi()
           if (completion_flag) then
             deallocate(specific_broadcast_item_at_index%send_requests)
@@ -332,7 +335,7 @@ contains
         end if
         call check_thread_status(forthread_mutex_unlock(specific_broadcast_item_at_index%mutex))
         if (destroy_lock) call check_thread_status(forthread_mutex_destroy(specific_broadcast_item_at_index%mutex))
-      end do      
+      end do
       call check_thread_status(forthread_rwlock_unlock(broadcast_statuses_rwlock))
 
       if (.not. c_is_empty(entries_to_remove)) then
@@ -348,8 +351,8 @@ contains
       end if
       call c_free(entries_to_remove)
       call check_thread_status(forthread_mutex_unlock(clean_progress_mutex))
-    end if    
-  end subroutine clean_broadcast_progress  
+    end if
+  end subroutine clean_broadcast_progress
 
   !> Locates and returns or adds and returns a specific broadcast item representing a timestep and field
   !! @param field_name The field name this represents
@@ -383,7 +386,7 @@ contains
       call check_thread_status(forthread_rwlock_unlock(broadcast_statuses_rwlock))
     end if
   end function find_or_add_broadcast_item
-  
+
   !> Finds a specific broadcast item or null if none is found
   !! @param field_name Corresponding field name to find
   !! @param timestep Corresponding timestep to find
@@ -408,13 +411,13 @@ contains
       end select
     else
       find_broadcast_item=>null()
-    end if    
+    end if
   end function find_broadcast_item
 
   !> Locates a broadcast item within a mapentry or null if none exists
   !! @param mapentry The map entry to use for this retrieval
   !! @returns The broadcast status or null if none exists
-  function retrieve_broadcast_item(mapentry)   
+  function retrieve_broadcast_item(mapentry)
     type(mapentry_type), intent(in) :: mapentry
     type(inter_io_broadcast), pointer :: retrieve_broadcast_item
 
@@ -429,6 +432,6 @@ contains
       end select
     else
       retrieve_broadcast_item=>null()
-    end if    
+    end if
   end function retrieve_broadcast_item
 end module broadcast_inter_io_mod

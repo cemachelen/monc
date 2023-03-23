@@ -12,6 +12,7 @@ module io_server_state_writer_mod
   use io_server_client_mod, only : pack_scalar_field
   use mpi, only : MPI_IN_PLACE, MPI_INT, MPI_LONG_LONG_INT, MPI_SUM, MPI_STATUS_IGNORE, mpi_wait
   use mpi_communication_mod, only : lock_mpi, unlock_mpi, wait_for_mpi_request
+  use mpi_error_handler_mod, only : check_mpi_success
   use netcdf_misc_mod, only : check_netcdf_status
   use timeaveraged_time_manipulation_mod, only : prepare_to_serialise_time_averaged_state, serialise_time_averaged_state
   use instantaneous_time_manipulation_mod, only : prepare_to_serialise_instantaneous_state, serialise_instantaneous_state
@@ -25,7 +26,7 @@ module io_server_state_writer_mod
      !> ISO C binding interface for NetCDF dimension definition, needed to support 64 bit lengths
      function nc_def_dim(ncid, name, nlen, idp) bind(C)
        use iso_c_binding, only: c_int, c_size_t, c_char
-       
+
        integer(kind=c_int), value :: ncid
        character(kind=c_char), intent(in) :: name(*)
        integer(kind=c_size_t), value :: nlen
@@ -69,8 +70,8 @@ module io_server_state_writer_mod
 
   abstract interface
      integer(kind=8) function writer_field_manager_prepare_to_serialise_state()
-     end function writer_field_manager_prepare_to_serialise_state     
-     
+     end function writer_field_manager_prepare_to_serialise_state
+
      subroutine writer_field_manager_serialise_state(byte_data)
        character, dimension(:), allocatable, intent(inout) :: byte_data
      end subroutine writer_field_manager_serialise_state
@@ -88,7 +89,7 @@ module io_server_state_writer_mod
   procedure(writer_field_manager_serialise_state), pointer :: serialise_writer_field_manager_state
   procedure(writer_field_manager_prepare_to_serialise_state), pointer :: prepare_to_serialise_writer_field_manager_state
   procedure(write_field_manager_determine_if_up_to_date), pointer :: is_write_field_manager_up_to_date
-  
+
   public define_io_server_state_contributions, write_io_server_state, set_serialise_write_field_manager_state, &
        is_io_server_state_writer_ready
 contains
@@ -99,13 +100,13 @@ contains
   !! @param prepare_to_serialise_writer_field_manager_state_arg Preparation of field manager state procedure
   !! @param is_write_field_manager_up_to_date_arg Procedure to determine whether field manager is up to date
   subroutine set_serialise_write_field_manager_state(serialise_writer_field_manager_state_arg, &
-       prepare_to_serialise_writer_field_manager_state_arg, is_write_field_manager_up_to_date_arg)    
+       prepare_to_serialise_writer_field_manager_state_arg, is_write_field_manager_up_to_date_arg)
     procedure(writer_field_manager_serialise_state) :: serialise_writer_field_manager_state_arg
     procedure(writer_field_manager_prepare_to_serialise_state) :: prepare_to_serialise_writer_field_manager_state_arg
     procedure(write_field_manager_determine_if_up_to_date) :: is_write_field_manager_up_to_date_arg
 
     integer(kind=c_size_t) :: size_t_test
-    
+
     serialise_writer_field_manager_state=>serialise_writer_field_manager_state_arg
     prepare_to_serialise_writer_field_manager_state=>prepare_to_serialise_writer_field_manager_state_arg
     is_write_field_manager_up_to_date=>is_write_field_manager_up_to_date_arg
@@ -113,7 +114,7 @@ contains
     if (c_sizeof(size_t_test) .lt. 8) then
       call log_master_log(LOG_WARN, &
            "Your system's size_t is not 64 bit, this will limit the size of IO server state storage to 4GB")
-    end if    
+    end if
   end subroutine set_serialise_write_field_manager_state
 
   !> Determines whether the IO server state writer is ready (i.e. state is at a specific level for the timestep)
@@ -123,7 +124,7 @@ contains
     integer, intent(in) :: timestep
 
     is_io_server_state_writer_ready=is_write_field_manager_up_to_date(timestep)
-  end function is_io_server_state_writer_ready  
+  end function is_io_server_state_writer_ready
 
   !> Will determine the size of the package for different facets of the IO server state and kick off non-blocking collective
   !! calls to aggregate the sizes on each IO server process which is needed for the NetCDF dimension sizing and location in this.
@@ -159,14 +160,16 @@ contains
     local_writer_entry_byte_size(current_index+1)=prepare_to_serialise_instantaneous_state()
     local_writer_entry_byte_size(current_index+2)=prepare_to_serialise_writer_field_manager_state()
     local_writer_entry_byte_size(current_index+3)=prepare_to_serialise_writer_entries_time_points(time_points)
-    
+
     global_writer_entry_byte_size=local_writer_entry_byte_size
     my_writer_entry_start_point=local_writer_entry_byte_size
     call lock_mpi()
     call mpi_iallreduce(MPI_IN_PLACE, global_writer_entry_byte_size, size(global_writer_entry_byte_size), MPI_LONG_LONG_INT, &
          MPI_SUM, io_configuration%io_communicator, global_writer_entry_byte_size_request, ierr)
+    call check_mpi_success(ierr, "io_state_writer", "prepare_io_server_state_storage", "mpi_iallreduce")
     call mpi_iscan(MPI_IN_PLACE, my_writer_entry_start_point, size(my_writer_entry_start_point), MPI_LONG_LONG_INT, &
          MPI_SUM, io_configuration%io_communicator, my_writer_entry_start_request, ierr)
+    call check_mpi_success(ierr, "io_state_writer", "prepare_io_server_state_storage", "mpi_iscan")
     call unlock_mpi()
   end subroutine prepare_io_server_state_storage
 
@@ -193,7 +196,7 @@ contains
     type(mapentry_type) :: map_entry
     type(iterator_type) :: iterator
     real(kind=DEFAULT_PRECISION) :: r_value
-        
+
     current_data_point=1
     current_data_point=pack_scalar_field(byte_data, current_data_point, c_size(time_points))
     iterator=c_get_iterator(time_points)
@@ -203,8 +206,8 @@ contains
       r_value=c_get_real(map_entry)
       current_data_point=pack_scalar_field(byte_data, current_data_point, key)
       current_data_point=pack_scalar_field(byte_data, current_data_point, double_real_value=r_value)
-    end do    
-  end subroutine serialise_writer_entries_time_points  
+    end do
+  end subroutine serialise_writer_entries_time_points
 
   !> Defines the dimensions and variables in a NetCDF file that consitute the IO server current state. This will call out
   !! to prepare all IO state for storage (determines the size of each byte code and issues locks for consistency.)
@@ -215,13 +218,13 @@ contains
     type(writer_type), volatile, dimension(:), intent(inout) :: writer_entries
     type(hashmap_type), volatile, intent(inout) :: time_points
     type(netcdf_diagnostics_type), intent(inout) :: netcdf_file
-    
+
     integer :: ncdf_dimid, ncdf_varid, current_index, i
     character, dimension(:), allocatable :: byte
 
     call prepare_io_server_state_storage(io_configuration, writer_entries, time_points)
-    
-    call lock_mpi()    
+
+    call lock_mpi()
     call check_netcdf_status(nf90_def_dim(netcdf_file%ncid, "io_configuration_dim", &
          size(io_configuration%text_configuration), ncdf_dimid))
     call c_put_integer(netcdf_file%dimension_to_id, "io_configuration_dim", ncdf_dimid)
@@ -243,8 +246,8 @@ contains
              global_writer_entry_byte_size(current_index))
         current_index=current_index+1
       end if
-    end do        
-    
+    end do
+
     call define_state_storage(netcdf_file, ncdf_dimid, "serialised_timeaveraged_manipulation", &
          global_writer_entry_byte_size(current_index))
     call define_state_storage(netcdf_file, ncdf_dimid, "serialised_instantaneous_manipulation", &
@@ -274,7 +277,7 @@ contains
     cncid = netcdf_file%ncid
     cnvdims=1
     cvdims(1)=entries_directory_dim_id-1
-    
+
     cxtype=10 ! NC_INT64 type, note that this is signed as Fortran doesn't really like unsigned integers
     call lock_mpi()
     call check_netcdf_status(nc_def_var(cncid, trim(base_key)//"_directory"//C_NULL_CHAR, cxtype, &
@@ -282,7 +285,7 @@ contains
     ncdf_varid=cvarid+1
 
     call c_put_integer(netcdf_file%variable_to_id, trim(base_key)//"_directory", ncdf_varid)
-  
+
     call check_netcdf_status(nc_def_dim(cncid, trim(base_key)//"_dim"//C_NULL_CHAR, &
          int(expected_global_entries, c_size_t), cdimid))
     ncdf_dimid=cdimid+1
@@ -367,7 +370,7 @@ contains
   subroutine write_state_storage(netcdf_file, writer_entry_start_point, my_io_rank, base_key, raw_byte_code)
     type(netcdf_diagnostics_type), intent(inout) :: netcdf_file
     integer, intent(in) :: my_io_rank
-    integer(kind=8), intent(in) :: writer_entry_start_point 
+    integer(kind=8), intent(in) :: writer_entry_start_point
     character(len=*), intent(in) :: base_key
     character, dimension(:), intent(in) :: raw_byte_code
 
@@ -388,11 +391,11 @@ contains
     cstartptr=c_loc(cstart)
     ccountsptr=c_loc(ccounts)
     cstridesptr=c_loc(cstrides)
-    
+
     call lock_mpi()
     call check_netcdf_status(nc_put_var1_long(cncid, cvarid, cstartptr, c_writer_corrected_start_point))
     cvarid=c_get_integer(netcdf_file%variable_to_id, trim(base_key))-1
-    cstart(1)=c_writer_corrected_start_point-1    
+    cstart(1)=c_writer_corrected_start_point-1
     call check_netcdf_status(nc_put_vars_text(cncid, cvarid, cstartptr, ccountsptr, cstridesptr, raw_byte_code))
     call unlock_mpi()
   end subroutine write_state_storage

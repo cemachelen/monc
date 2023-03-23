@@ -6,10 +6,11 @@ module io_server_state_reader_mod
        nf90_inq_varid, nf90_get_var, nf90_get_att, nf90_close
   use netcdf_misc_mod, only : check_netcdf_status
   use collections_mod, only : hashmap_type, c_put_real
-  use conversions_mod, only : conv_to_string 
+  use conversions_mod, only : conv_to_string
   use writer_types_mod, only : writer_type, unserialise_writer_type
   use logging_mod, only : LOG_ERROR, LOG_WARN, log_log, log_master_log
   use mpi, only : mpi_comm_rank, mpi_comm_size
+  use mpi_error_handler_mod, only : check_mpi_success
   use data_utils_mod, only : unpack_scalar_integer_from_bytedata, unpack_scalar_dp_real_from_bytedata
   use timeaveraged_time_manipulation_mod, only : unserialise_time_averaged_state
   use instantaneous_time_manipulation_mod, only : unserialise_instantaneous_state
@@ -79,15 +80,16 @@ contains
 
     call mpi_comm_rank(io_communicator_arg, my_io_server_rank, ierr)
     call mpi_comm_size(io_communicator_arg, number_io_server, ierr)
+    call check_mpi_success(ierr, "io_server_state_reader_mod", "read_io_server_configuration", "mpi_comm_size")
     call check_netcdf_status(nf90_open(path = checkpoint_filename, mode = nf90_nowrite, ncid = ncid))
     call check_netcdf_status(nf90_inq_dimid(ncid, "entries_directory_dim", dim_id), found)
     if (.not. found) then
       if (my_io_server_rank==0) then
         call log_log(LOG_WARN, "Restarting the IO server fresh as the checkpoint file does not contain IO state")
-      end if      
+      end if
       return
-    end if    
-    call check_netcdf_status(nf90_inquire_dimension(ncid, dim_id, len=dim_size))    
+    end if
+    call check_netcdf_status(nf90_inquire_dimension(ncid, dim_id, len=dim_size))
 
     if (dim_size .ne. number_io_server) then
       call log_log(LOG_ERROR, "Can not restart IO server with a different number of IO servers")
@@ -137,7 +139,7 @@ contains
          "serialised_timepoints", raw_bytes)
     call restart_writer_state_timepoints(time_points, raw_bytes)
     deallocate(raw_bytes)
-    
+
     call check_netcdf_status(nf90_close(ncid))
   end subroutine reactivate_writer_federator_state
 
@@ -161,7 +163,7 @@ contains
     deallocate(raw_bytes)
 
     call check_netcdf_status(nf90_close(ncid))
-  end subroutine reactivate_writer_field_manager_state  
+  end subroutine reactivate_writer_field_manager_state
 
   !> Retrieves the IO server XML configuration from the checkpoint file
   !! @param ncid The NetCDF checkpoint file ID
@@ -194,7 +196,7 @@ contains
     integer, intent(in) :: ncid, number_io_server, my_io_server_rank
     character(len=*), intent(in) :: base_key
     character, dimension(:), allocatable, intent(out) :: raw_bytes
-    
+
     integer :: dim_id, var_id
     logical :: found
     integer(kind=8) :: dim_size, serialised_range(2), number_serialised_entries
@@ -213,7 +215,7 @@ contains
 
     call check_netcdf_status(nf90_inq_dimid(ncid, trim(base_key)//"_dim", dim_id), found)
     if (.not. found) return
-    
+
     cdimid=dim_id-1
     call check_netcdf_status(nc_inq_dim(cncid, cdimid, tmpname, cdlen))
     dim_size=cdlen
@@ -232,8 +234,8 @@ contains
       ccounts(1)=1
       call check_netcdf_status(nc_get_vara_long(cncid, cvarid, cstartptr, ccountsptr, serialised_range))
       serialised_range(2)=dim_size
-    end if    
-    number_serialised_entries=(serialised_range(2)-serialised_range(1)) + 1    
+    end if
+    number_serialised_entries=(serialised_range(2)-serialised_range(1)) + 1
     call check_netcdf_status(nf90_inq_varid(ncid, trim(base_key), var_id), found)
     if (.not. found) return
     allocate(raw_bytes(number_serialised_entries))
@@ -253,7 +255,7 @@ contains
     character, dimension(:), allocatable :: raw_bytes
 
     integer :: i, number_entries, current_point, byte_size
-    
+
     if (.not. allocated(raw_bytes)) then
       call log_master_log(LOG_WARN, "On restart no writer state in checkpoint file")
       return
@@ -293,13 +295,13 @@ contains
       r_value=unpack_scalar_dp_real_from_bytedata(raw_bytes, current_point)
       call c_put_real(time_points, conv_to_string(timestep_key), r_value)
     end do
-  end subroutine restart_writer_state_timepoints  
+  end subroutine restart_writer_state_timepoints
 
   !> Will restart the time averaged manipulation state from the checkpoint file
   !! @param raw_byte The serialised byte state to unpackage and restart from
   subroutine restart_timeaveraged_state_from_checkpoint(raw_bytes)
     character, dimension(:), allocatable :: raw_bytes
-    
+
     if (.not. allocated(raw_bytes)) then
       call log_master_log(LOG_WARN, "On restart no time averaged state in checkpoint file")
       return
@@ -311,7 +313,7 @@ contains
   !! @param raw_byte The serialised byte state to unpackage and restart from
   subroutine restart_instantaneous_state_from_checkpoint(raw_bytes)
     character, dimension(:), allocatable :: raw_bytes
-    
+
     if (.not. allocated(raw_bytes)) then
       call log_master_log(LOG_WARN, "On restart no instantaneous state in checkpoint file")
       return
@@ -331,5 +333,5 @@ contains
       return
     end if
     call unserialise_writer_field_manager(raw_bytes)
-  end subroutine restart_writer_field_manager_from_checkpoint  
+  end subroutine restart_writer_field_manager_from_checkpoint
 end module io_server_state_reader_mod

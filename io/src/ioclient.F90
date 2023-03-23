@@ -6,6 +6,7 @@ module io_server_client_mod
        c_next_mapentry, c_get_generic
   use conversions_mod, only : conv_to_string
   use mpi, only : MPI_CHARACTER, MPI_INT, MPI_LOGICAL, MPI_REAL, MPI_DOUBLE_PRECISION, MPI_ADDRESS_KIND
+  use mpi_error_handler_mod, only : check_mpi_success
   implicit none
 
 #ifndef TEST_MODE
@@ -28,7 +29,7 @@ module io_server_client_mod
      character(len=STRING_LENGTH) :: definition_name
      logical :: send_on_terminate
      integer :: number_fields, frequency
-  end type definition_description_type  
+  end type definition_description_type
 
   ! Constants used in sending and receiving IO data
   integer, parameter :: COMMAND_TAG=9, DATA_TAG=10, REGISTER_COMMAND=1, DEREGISTER_COMMAND=3, DATA_COMMAND_START=4, &
@@ -61,15 +62,20 @@ contains
 
     integer :: ierr
     integer(kind=MPI_ADDRESS_KIND) :: large_number_extents(5)
-    
+
     call mpi_type_extent(MPI_INT, large_number_extents(INTEGER_DATA_TYPE), ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "populate_mpi_type_extents", "mpi_type_extent")
     call mpi_type_extent(MPI_LOGICAL, large_number_extents(BOOLEAN_DATA_TYPE), ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "populate_mpi_type_extents", "mpi_type_extent")
     call mpi_type_extent(MPI_CHARACTER, large_number_extents(STRING_DATA_TYPE), ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "populate_mpi_type_extents", "mpi_type_extent")
     call mpi_type_extent(MPI_REAL, large_number_extents(FLOAT_DATA_TYPE), ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "populate_mpi_type_extents", "mpi_type_extent")
     call mpi_type_extent(MPI_DOUBLE_PRECISION, large_number_extents(DOUBLE_DATA_TYPE), ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "populate_mpi_type_extents", "mpi_type_extent")
 
     populate_mpi_type_extents=int(large_number_extents)
-  end function populate_mpi_type_extents  
+  end function populate_mpi_type_extents
 
   !> Builds the MPI data type for sending data descriptions to registree MONCs
   integer function build_mpi_type_definition_description()
@@ -79,27 +85,33 @@ contains
     type(definition_description_type) :: basic_type
 
     call mpi_get_address(basic_type, base_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_definition_description", "mpi_get_address")
     old_types(1) = MPI_CHARACTER
     block_counts(1) = STRING_LENGTH
     offsets(1)=0
 
     call mpi_get_address(basic_type%send_on_terminate, num_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_definition_description", "mpi_get_address")
     old_types(2) = MPI_LOGICAL
     block_counts(2) = 1
     offsets(2)=int(num_addr-base_addr)
 
     call mpi_get_address(basic_type%number_fields, num_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_definition_description", "mpi_get_address")
     old_types(3) = MPI_INT
     block_counts(3) = 1
     offsets(3)=int(num_addr-base_addr)
 
     call mpi_get_address(basic_type%frequency, num_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_definition_description", "mpi_get_address")
     old_types(4) = MPI_INT
     block_counts(4) = 1
     offsets(4)=int(num_addr-base_addr)
 
-    call mpi_type_struct(4, block_counts, offsets, old_types, new_type, ierr) 
+    call mpi_type_struct(4, block_counts, offsets, old_types, new_type, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_definition_description", "mpi_type_struct")
     call mpi_type_commit(new_type, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_definition_description", "mpi_type_commit")
     build_mpi_type_definition_description=new_type
   end function build_mpi_type_definition_description
 
@@ -110,33 +122,40 @@ contains
 
     type(field_description_type) :: basic_type
 
-    call mpi_get_address(basic_type, base_addr, ierr)    
+    call mpi_get_address(basic_type, base_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_field_description", "mpi_get_address")
     old_types(1) = MPI_CHARACTER
     block_counts(1) = STRING_LENGTH
     offsets(1)=0
 
-    call mpi_get_address(basic_type%field_name, num_addr, ierr)    
+    call mpi_get_address(basic_type%field_name, num_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_field_description", "mpi_get_address")
     old_types(2) = MPI_CHARACTER
     block_counts(2) = STRING_LENGTH
     offsets(2)=int(num_addr-base_addr)
 
     call mpi_get_address(basic_type%field_type, num_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_field_description", "mpi_get_address")
     old_types(3) = MPI_INT
     block_counts(3) = 1
     offsets(3)=int(num_addr-base_addr)
-    
+
     call mpi_get_address(basic_type%data_type, num_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_field_description", "mpi_get_address")
     old_types(4) = MPI_INT
     block_counts(4) = 1
     offsets(4)=int(num_addr-base_addr)
 
     call mpi_get_address(basic_type%optional, num_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_field_description", "mpi_get_address")
     old_types(5) = MPI_LOGICAL
     block_counts(5) = 1
     offsets(5)=int(num_addr-base_addr)
 
-    call mpi_type_struct(5, block_counts, offsets, old_types, new_type, ierr) 
+    call mpi_type_struct(5, block_counts, offsets, old_types, new_type, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_field_description", "mpi_type_struct")
     call mpi_type_commit(new_type, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_field_description", "mpi_type_commit")
     build_mpi_type_field_description=new_type
   end function build_mpi_type_field_description
 
@@ -150,22 +169,27 @@ contains
     type(data_sizing_description_type) :: basic_type
 
     call mpi_get_address(basic_type, base_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_data_sizing_description", "mpi_get_address")
     old_types(1) = MPI_CHARACTER
-    block_counts(1) = STRING_LENGTH 
+    block_counts(1) = STRING_LENGTH
     offsets(1)=0
 
     call mpi_get_address(basic_type%dimensions, num_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_data_sizing_description", "mpi_get_address")
     old_types(2) = MPI_INT
     block_counts(2) = 1
     offsets(2)=int(num_addr-base_addr)
 
-    call mpi_get_address(basic_type%dim_sizes, num_addr, ierr)    
+    call mpi_get_address(basic_type%dim_sizes, num_addr, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_data_sizing_description", "mpi_get_address")
     old_types(3) = MPI_INT
     block_counts(3) = 4
     offsets(3)=int(num_addr-base_addr)
 
-    call mpi_type_struct(3, block_counts, offsets, old_types, new_type, ierr) 
+    call mpi_type_struct(3, block_counts, offsets, old_types, new_type, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_data_sizing_description", "mpi_type_struct")
     call mpi_type_commit(new_type, ierr)
+    call check_mpi_success(ierr, "io_server_client_mod", "build_mpi_type_data_sizing_description", "mpi_type_commit")
     build_mpi_type_data_sizing_description=new_type
   end function build_mpi_type_data_sizing_description
 
@@ -192,7 +216,7 @@ contains
       offsets(1)=0
     else
       offsets(type_index)=offsets(type_index-1)+type_extents(prev_data_type) * block_counts(type_index-1)
-    end if    
+    end if
   end subroutine append_mpi_datatype
 
   !> Gets the MPI datatype from out internal representation of the field data type (as in the configuration
@@ -281,19 +305,19 @@ contains
     integer :: target_end
 
     if (present(int_array)) then
-      target_end=start_offset+kind(int_array)*size(int_array)-1    
+      target_end=start_offset+kind(int_array)*size(int_array)-1
       buffer(start_offset:target_end) = transfer(int_array, buffer(start_offset:target_end))
     else if (present(real_array_1d)) then
-      target_end=start_offset+kind(real_array_1d)*size(real_array_1d)-1    
+      target_end=start_offset+kind(real_array_1d)*size(real_array_1d)-1
       buffer(start_offset:target_end) = transfer(real_array_1d, buffer(start_offset:target_end))
     else if (present(real_array_2d)) then
-      target_end=start_offset+kind(real_array_2d)*size(real_array_2d)-1    
+      target_end=start_offset+kind(real_array_2d)*size(real_array_2d)-1
       buffer(start_offset:target_end) = transfer(real_array_2d, buffer(start_offset:target_end))
     else if (present(real_array_3d)) then
-      target_end=start_offset+kind(real_array_3d)*size(real_array_3d)-1    
+      target_end=start_offset+kind(real_array_3d)*size(real_array_3d)-1
       buffer(start_offset:target_end) = transfer(real_array_3d, buffer(start_offset:target_end))
     else if (present(real_array_4d)) then
-      target_end=start_offset+kind(real_array_4d)*size(real_array_4d)-1    
+      target_end=start_offset+kind(real_array_4d)*size(real_array_4d)-1
       buffer(start_offset:target_end) = transfer(real_array_4d, buffer(start_offset:target_end))
     end if
     pack_array_field=target_end+1
@@ -340,7 +364,7 @@ contains
     else if (present(logical_value)) then
       target_end=start_offset+kind(logical_value)-1
       buffer(start_offset:target_end) = transfer(logical_value, buffer(start_offset:target_end))
-    else 
+    else
       target_end=start_offset-1
     end if
     pack_scalar_field=target_end+1

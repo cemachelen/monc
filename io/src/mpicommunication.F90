@@ -11,6 +11,7 @@ module mpi_communication_mod
   use threadpool_mod, only : check_thread_status
   use mpi, only : MPI_COMM_WORLD, MPI_SOURCE, MPI_INT, MPI_BYTE, MPI_STATUS_SIZE, MPI_REQUEST_NULL, &
        MPI_STATUS_IGNORE, MPI_STATUSES_IGNORE, MPI_ANY_SOURCE, MPI_THREAD_MULTIPLE, MPI_THREAD_SERIALIZED
+  use mpi_error_handler_mod, only : check_mpi_success
   use iso_c_binding
   implicit none
 
@@ -21,11 +22,11 @@ module mpi_communication_mod
   integer, parameter :: MS_WAIT_BETWEEN_TESTS=100
 
   !< Interface to the C usleep Linux call which allows us to sleep for a specific number of MS
-  interface 
-     subroutine usleep(useconds) bind(C) 
-       use iso_c_binding 
-       implicit none 
-       integer(c_int32_t), value :: useconds 
+  interface
+     subroutine usleep(useconds) bind(C)
+       use iso_c_binding
+       implicit none
+       integer(c_int32_t), value :: useconds
      end subroutine usleep
   end interface
 
@@ -48,7 +49,7 @@ contains
     mpi_threading_mode=provided_threading
     if (mpi_threading_mode .ne. MPI_THREAD_MULTIPLE .and. mpi_threading_mode .ne. MPI_THREAD_SERIALIZED) then
       call log_master_log(LOG_ERROR, "You must run MONC in MPI thread serialized or thread multiple mode for the IO server")
-    end if    
+    end if
     manage_mpi_thread_safety=provided_threading == MPI_THREAD_SERIALIZED
     call check_thread_status(forthread_mutex_init(mpi_mutex, -1))
   end subroutine initialise_mpi_communication
@@ -66,7 +67,7 @@ contains
   !> Pauses for a specific number of ms to allow for MPI interleaving, this is to avoid starvation
   subroutine pause_for_mpi_interleaving()
     call usleep(int(MS_WAIT_BETWEEN_TESTS, c_int32_t))
-  end subroutine pause_for_mpi_interleaving  
+  end subroutine pause_for_mpi_interleaving
 
   !> Waits for a specific MPI request to complete, either by managing thread safety and interleaving or just a call to MPI
   !! if we are in multiple mode
@@ -84,20 +85,24 @@ contains
         call lock_mpi()
         if (present(status)) then
           call mpi_test(request, flag, status, ierr)
+          call check_mpi_success(ierr, "mpi_communication_mod", "wait_for_mpi_request", "mpi_test")
         else
           call mpi_test(request, flag, MPI_STATUS_IGNORE, ierr)
+          call check_mpi_success(ierr, "mpi_communication_mod", "wait_for_mpi_request", "mpi_test")
         end if
-        call unlock_mpi()      
+        call unlock_mpi()
         if (.not. flag) call pause_for_mpi_interleaving()
       end do
     else
       if (present(status)) then
         call mpi_wait(request, status, ierr)
+        call check_mpi_success(ierr, "mpi_communication_mod", "wait_for_mpi_request", "mpi_wait")
       else
         call mpi_wait(request, MPI_STATUS_IGNORE, ierr)
+        call check_mpi_success(ierr, "mpi_communication_mod", "wait_for_mpi_request", "mpi_wait")
       end if
     end if
-  end subroutine wait_for_mpi_request  
+  end subroutine wait_for_mpi_request
 
   !> Waits for all MPI requests to complete, either by managing thread safety and interleaving or just a call to MPI
   !! if we are in multiple mode
@@ -115,13 +120,15 @@ contains
       do while (.not. flag)
         call lock_mpi()
         call mpi_testall(count, requests, flag, MPI_STATUSES_IGNORE, ierr)
-        call unlock_mpi()      
+        call check_mpi_success(ierr, "mpi_communication_mod", "waitall_for_mpi_requests", "mpi_testall")
+        call unlock_mpi()
         if (.not. flag) call pause_for_mpi_interleaving()
       end do
     else
       call mpi_waitall(count, requests, MPI_STATUSES_IGNORE, ierr)
+      call check_mpi_success(ierr, "mpi_communication_mod", "waitall_for_mpi_requests", "mpi_waitall")
     end if
-  end subroutine waitall_for_mpi_requests 
+  end subroutine waitall_for_mpi_requests
 
   !> Retrieves the number of IO servers that are running in total
   !! @param io_comm The IO server communicator
@@ -145,7 +152,7 @@ contains
 
     call mpi_comm_rank(io_comm, number, ierr)
     get_my_io_rank=number
-  end function get_my_io_rank  
+  end function get_my_io_rank
 
   !> Registers a request for receiving a command from any MONC process on the command channel
   subroutine register_command_receive()
@@ -154,6 +161,7 @@ contains
     call lock_mpi()
     call mpi_irecv(command_buffer, 1, MPI_INT, MPI_ANY_SOURCE, COMMAND_TAG, &
          MPI_COMM_WORLD, command_request_handle, ierr)
+    call check_mpi_success(ierr, "mpi_communication_mod", "register_command_receive", "mpi_irecv")
     call unlock_mpi()
   end subroutine register_command_receive
 
@@ -176,28 +184,32 @@ contains
       if (present(data_dump_id)) tag_to_use=tag_to_use+data_dump_id
       call lock_mpi()
       call mpi_irecv(dump_data, num_elements, mpi_datatype, source, tag_to_use, MPI_COMM_WORLD, request, ierr)
+      call check_mpi_success(ierr, "mpi_communication_mod", "data_receive", "mpi_irecv")
       call unlock_mpi()
       call wait_for_mpi_request(request, status)
       call lock_mpi()
-      call mpi_get_count(status, mpi_datatype, recv_count, ierr)      
+      call mpi_get_count(status, mpi_datatype, recv_count, ierr)
+      call check_mpi_success(ierr, "mpi_communication_mod", "data_receive", "mpi_get_count")
       call unlock_mpi()
       data_receive=recv_count
     else if (present(description_data)) then
       call lock_mpi()
       call mpi_irecv(description_data, num_elements, mpi_datatype, source, DATA_TAG, MPI_COMM_WORLD, request, ierr)
+      call check_mpi_success(ierr, "mpi_communication_mod", "data_receive", "mpi_irecv")
       call unlock_mpi()
       call wait_for_mpi_request(request, status)
       call lock_mpi()
-      call mpi_get_count(status, mpi_datatype, recv_count, ierr)      
+      call mpi_get_count(status, mpi_datatype, recv_count, ierr)
+      call check_mpi_success(ierr, "mpi_communication_mod", "data_receive", "mpi_get_count")
       call unlock_mpi()
       data_receive=recv_count
-    end if    
+    end if
   end function data_receive
 
   !> Cancels all outstanding communication requests
   subroutine cancel_requests()
     call cancel_request(command_request_handle)
-  end subroutine cancel_requests  
+  end subroutine cancel_requests
 
   !> Cancels a specific communication request
   !! @param req Handle of the request to cancel
@@ -209,9 +221,10 @@ contains
     if (req .ne. MPI_REQUEST_NULL) then
       call lock_mpi()
       call mpi_cancel(req, ierr)
+      call check_mpi_success(ierr, "mpi_communication_mod", "cancel_request","mpi_cancel")
       call unlock_mpi()
     end if
-  end subroutine cancel_request  
+  end subroutine cancel_request
 
   !> Tests for a command message based upon the request already registered
   !! @param command The command which is received is returned to the caller
@@ -225,6 +238,7 @@ contains
 
     call lock_mpi()
     call mpi_test(command_request_handle, complete, status, ierr)
+    call check_mpi_success(ierr, "mpi_communication_mod", "test_for_command", "mpi_test")
     call unlock_mpi()
 
     if (complete) then
@@ -234,7 +248,7 @@ contains
       test_for_command=.true.
     else
       test_for_command=.false.
-    end if    
+    end if
   end function test_for_command
 
   !> Tests for inter IO server communication
@@ -255,11 +269,14 @@ contains
     call lock_mpi()
     do i=1, number_of_inter_io
       call mpi_iprobe(MPI_ANY_SOURCE, inter_io_communications(i)%message_tag, io_communicator, message_pending, status, ierr)
+      call check_mpi_success(ierr, "mpi_communication_mod", "test_for_inter_io", "mpi_iprobe")
       if (message_pending) then
         call mpi_get_count(status, MPI_BYTE, message_size, ierr)
+        call check_mpi_success(ierr, "mpi_communication_mod", "test_for_inter_io", "mpi_get_count")
         allocate(data_buffer(message_size))
         call mpi_recv(data_buffer, message_size, MPI_BYTE, status(MPI_SOURCE), inter_io_communications(i)%message_tag, &
              io_communicator, MPI_STATUS_IGNORE, ierr)
+        call check_mpi_success(ierr, "mpi_communication_mod", "test_for_inter_io", "mpi_recv")
         call unlock_mpi()
         command=INTER_IO_COMMUNICATION
         source=i
@@ -270,7 +287,7 @@ contains
     call unlock_mpi()
     test_for_inter_io=.false.
   end function test_for_inter_io
-  
+
   !> Frees an MPI type, used in clean up
   !! @param the_type The MPI type to free up
   subroutine free_mpi_type(the_type)
@@ -279,7 +296,8 @@ contains
     integer :: ierr
 
     call mpi_type_free(the_type, ierr)
-  end subroutine free_mpi_type  
+    call check_mpi_success(ierr, "mpi_communication_mod", "free_mpi_type", "mpi_type_free")
+  end subroutine free_mpi_type
 
   !> Builds the MPI type that corresponds to the data which will be received from a specific MONC process. Two factors
   !! determine the structure and size of this - the XML configuration which has been parsed and also specific details
@@ -313,18 +331,18 @@ contains
     field_ignores=0
     current_location=1
     do i=1,data_definition%number_of_data_fields
-      if (data_type == 0) then        
-        prev_data_type=data_type        
+      if (data_type == 0) then
+        prev_data_type=data_type
         data_type=data_definition%fields(i)%data_type
       else
         if (data_type .ne. data_definition%fields(i)%data_type) then
           ! For efficient type packing, combine multiple fields with the same type - therefore when the type changes work the previous one pack
           call append_mpi_datatype(field_start, i-1-field_ignores, field_array_sizes, data_type, &
-               type_extents, prev_data_type, type_counts+1, old_types, offsets, block_counts)          
+               type_extents, prev_data_type, type_counts+1, old_types, offsets, block_counts)
           field_start=i
           field_array_sizes=0
           field_ignores=0
-          prev_data_type=data_type                   
+          prev_data_type=data_type
           data_type=data_definition%fields(i)%data_type
           type_counts=type_counts+1
         end if
@@ -346,7 +364,7 @@ contains
           temp_size=1
           do j=1, field_size_info%dimensions
             temp_size=temp_size*field_size_info%dim_sizes(j)
-          end do          
+          end do
           if (data_definition%fields(i)%field_type .eq. MAP_FIELD_TYPE) then
             field_array_sizes=(field_array_sizes+temp_size*STRING_LENGTH*2)-1
             current_location=current_location+temp_size*STRING_LENGTH*2
@@ -388,10 +406,14 @@ contains
       type_counts=type_counts+1
     end if
     call lock_mpi()
-    call mpi_type_struct(type_counts, block_counts, offsets, old_types, new_type, ierr) 
+    call mpi_type_struct(type_counts, block_counts, offsets, old_types, new_type, ierr)
+    call check_mpi_success(ierr, "mpi_communication_mod", "build_mpi_datatype", "mpi_type_struct")
     call mpi_type_commit(new_type, ierr)
+    call check_mpi_success(ierr, "mpi_communication_mod", "build_mpi_datatype", "mpi_type_commit")
     call unlock_mpi()
     call mpi_type_size(new_type, data_size, ierr)
+    call check_mpi_success(ierr, "mpi_communication_mod", "build_mpi_datatype", "mpi_type_size")
     build_mpi_datatype=new_type
+
   end function build_mpi_datatype
 end module mpi_communication_mod

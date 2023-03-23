@@ -15,6 +15,7 @@ module iterativesolver_mod
   use registry_mod, only : is_component_enabled
   use logging_mod, only : LOG_ERROR, log_master_log
   use mpi, only : MPI_MAX, MPI_SUM, MPI_COMM_WORLD, MPI_REQUEST_NULL, MPI_STATUSES_IGNORE
+  use mpi_error_handler_mod, only : check_mpi_success
   implicit none
 
 #ifndef TEST_MODE
@@ -31,7 +32,7 @@ module iterativesolver_mod
   integer :: max_iterations, &     !< Maximum number of BiCGStab iterations
        preconditioner_iterations     !< Number of preconditioner iterations to perform per call
   logical :: symm_prob
-  
+
   real(kind=DEFAULT_PRECISION), parameter :: TINY = 1.0e-16 !< Minimum residual - if we go below this then something has gone wrong
 
   type(halo_communication_type), save :: halo_swap_state      !< The halo swap state as initialised by that module
@@ -97,9 +98,9 @@ contains
 
     call complete_psrce_calculation(current_state, current_state%local_grid%halo_size(Y_INDEX), &
          current_state%local_grid%halo_size(X_INDEX))
-     
+
     call initiate_nonblocking_halo_swap(current_state, halo_swap_state, copy_p_to_halo_buffer)
-    call deduce_global_divmax(current_state)    
+    call deduce_global_divmax(current_state)
     call complete_nonblocking_halo_swap(current_state, halo_swap_state, perform_local_data_copy_for_p, copy_halo_buffer_to_p)
 
     psource=current_state%p%data
@@ -130,7 +131,7 @@ contains
 
     call finalise_halo_communication(halo_swap_state)
     deallocate(psource, prev_p, A%u, A%d, A%p, A%lu_u, A%lu_d, A%vol)
-  end subroutine finalisation_callback  
+  end subroutine finalisation_callback
 
   !> Performs the BiCGStab KS method
   !! @param current_state The current model state
@@ -139,7 +140,7 @@ contains
   !! @param b The RHS
   subroutine bicgstab(current_state, A, x, b, i_strt, i_end, j_strt, j_end, k_end)
     type(model_state_type), target, intent(inout) :: current_state
-    type(matrix_type), intent(inout) :: A    
+    type(matrix_type), intent(inout) :: A
     real(kind=DEFAULT_PRECISION), dimension(:,:,:), intent(inout) :: x
     real(kind=DEFAULT_PRECISION), dimension(:,:,:), intent(in) :: b
     integer, intent(in) :: i_strt, i_end, j_strt, j_end, k_end
@@ -197,7 +198,7 @@ contains
               end do
             end do
           end do
-        end if       
+        end if
         call calc_Ax(current_state, A, pp, v)
         nrm = inner_prod(current_state, cr, v, i_strt, i_end, j_strt, j_end, k_end)
         alf = my_rho / nrm
@@ -232,11 +233,11 @@ contains
           call log_log(LOG_WARN, "Convergence problem, omega="//conv_to_string(omg))
         endif
 
-        err = sqrt(ss - 2*omg*ts + omg**2 *tt)/sc_err        
-        if (err < tolerance) exit        
+        err = sqrt(ss - 2*omg*ts + omg**2 *tt)/sc_err
+        if (err < tolerance) exit
       end do
     end if
-    
+
     if (err > tolerance) then
       call log_log(LOG_WARN, "Iterative solver bicgstab: "// &
                              "Convergence failed, RNorm="//conv_to_string(err, exponent=.true.))
@@ -276,7 +277,7 @@ contains
         end do
       end do
     end do
- 
+
     ! Calculate scale factor for error
 
     call calc_Ax(current_state, A, x, Ax)
@@ -343,19 +344,19 @@ contains
     if (preits .lt. 0) then
       s=r
       return
-    end if    
+    end if
 
     do i=current_state%local_grid%local_domain_start_index(X_INDEX), current_state%local_grid%local_domain_end_index(X_INDEX)
       do j=current_state%local_grid%local_domain_start_index(Y_INDEX), current_state%local_grid%local_domain_end_index(Y_INDEX)
         s(1,j,i) = 0.0_DEFAULT_PRECISION
-        k=2 
+        k=2
         s(k,j,i)=r(k,j,i)*A%LU_d(k)
         do k=3,current_state%local_grid%size(Z_INDEX)
           s(k,j,i)=(r(k,j,i) - A%d(k)*s(k-1,j,i))*A%lu_d(k)
         end do
         do k=current_state%local_grid%size(Z_INDEX)-1, 2, -1
           s(k,j,i)=s(k,j,i) - A%lu_u(k)*s(k+1,j,i)
-        end do        
+        end do
       end do
     end do
 
@@ -363,16 +364,16 @@ contains
       call calc_Ax(current_state, A, s, t)
       do i=current_state%local_grid%local_domain_start_index(X_INDEX), current_state%local_grid%local_domain_end_index(X_INDEX)
       do j=current_state%local_grid%local_domain_start_index(Y_INDEX), current_state%local_grid%local_domain_end_index(Y_INDEX)
-          k=2 
-          s_k(k)=(r(k,j,i) - t(k,j,i))*A%lu_d(k) 
-          do k=3,current_state%local_grid%size(Z_INDEX) 
-            s_k(k)=(r(k,j,i) - t(k,j,i) - A%d(k)*s_k(k-1))*A%lu_d(k) 
+          k=2
+          s_k(k)=(r(k,j,i) - t(k,j,i))*A%lu_d(k)
+          do k=3,current_state%local_grid%size(Z_INDEX)
+            s_k(k)=(r(k,j,i) - t(k,j,i) - A%d(k)*s_k(k-1))*A%lu_d(k)
           end do
           k=current_state%local_grid%size(Z_INDEX)
-          s(k,j,i)=s(k,j,i)+s_k(k) 
-          do k=current_state%local_grid%size(Z_INDEX)-1, 2, -1 
-            s_k(k)=s_k(k) - A%lu_u(k)*s_k(k+1) 
-            s(k,j,i)=s(k,j,i) + relaxation*s_k(k) 
+          s(k,j,i)=s(k,j,i)+s_k(k)
+          do k=current_state%local_grid%size(Z_INDEX)-1, 2, -1
+            s_k(k)=s_k(k) - A%lu_u(k)*s_k(k+1)
+            s(k,j,i)=s(k,j,i) + relaxation*s_k(k)
           end do
         end do
       end do
@@ -403,7 +404,7 @@ contains
     real(kind=DEFAULT_PRECISION), dimension(:,:,:), target, intent(inout) :: x, Ax
 
     integer :: i, k, j, n, istart, iend, jstart, jend
-    type(field_data_wrapper_type) :: source_data   
+    type(field_data_wrapper_type) :: source_data
 
     source_data%data=>x
 
@@ -511,12 +512,13 @@ contains
       do j=j_strt, j_end
         do k=2, k_end
           local_sum=local_sum+x(k,j,i)*y(k,j,i)
-        end do        
-      end do      
+        end do
+      end do
     end do
 
     call mpi_allreduce(local_sum, global_sum, 1, PRECISION_TYPE, MPI_SUM, current_state%parallel%monc_communicator, ierr)
     inner_prod=global_sum
+    call check_mpi_success(ierr, "iterativesolver_mod", "inner_prod", "mpi_allreduce")
   end function inner_prod
 
   !> Returns the global inner product of a pair of vectors, ignoring the halo cells for three separate pairs. This call
@@ -550,7 +552,8 @@ contains
 
     call mpi_allreduce(local_sum, global_sum, 3, PRECISION_TYPE, MPI_SUM, current_state%parallel%monc_communicator, ierr)
     inner_prod_three_way=global_sum
-  end function inner_prod_three_way 
+    call check_mpi_success(ierr, "iterativesolver_mod", "inner_prod_three_way", "mpi_allreduce")
+  end function inner_prod_three_way
 
   !> Sets the values of the provided matrix to solve the poisson equation
   !! @param grid_configuration Configuration of the vertical and horizontal grids
@@ -559,17 +562,17 @@ contains
   subroutine set_matrix_for_poisson(grid_configuration, A, z_size)
     type(grid_configuration_type), intent(inout) :: grid_configuration
     type(matrix_type), intent(inout) :: A
-    integer, intent(in) :: z_size    
+    integer, intent(in) :: z_size
 
     integer :: k
-    real(kind=DEFAULT_PRECISION) :: d_sc, concat_scalars    
+    real(kind=DEFAULT_PRECISION) :: d_sc, concat_scalars
 
     A%n=grid_configuration%horizontal%cx*grid_configuration%horizontal%cx
     A%s=A%n
     A%e=grid_configuration%horizontal%cy*grid_configuration%horizontal%cy
     A%w=A%e
     concat_scalars=A%n+A%s+A%e+A%w
-    do k=2, z_size      
+    do k=2, z_size
       if (symm_prob) then
          A%vol(k)=grid_configuration%vertical%dz(k)
          d_sc=1.0/grid_configuration%vertical%rhon(k)
@@ -592,12 +595,12 @@ contains
       A%u(k)=d_sc * A%u(k)
       A%d(k)=d_sc * A%d(k)
     end do
-     k=2 
-     A%lu_d(k)=1.0_DEFAULT_PRECISION/A%p(k) 
-     A%lu_u(k)=A%lu_d(k)*A%u(k) 
-     do k=3, z_size 
+     k=2
+     A%lu_d(k)=1.0_DEFAULT_PRECISION/A%p(k)
+     A%lu_u(k)=A%lu_d(k)*A%u(k)
+     do k=3, z_size
        A%lu_d(k)=1.0_DEFAULT_PRECISION/(A%p(k) - A%d(k)*A%lu_u(k-1))
-       A%lu_u(k)=A%u(k)*A%lu_d(k) 
+       A%lu_u(k)=A%u(k)*A%lu_d(k)
      end do
   end subroutine set_matrix_for_poisson
 
@@ -605,12 +608,13 @@ contains
   !! @param current_state The current model state
   subroutine deduce_global_divmax(current_state)
     type(model_state_type), target, intent(inout) :: current_state
-    
+
     integer :: ierr
-    
+
     call mpi_allreduce(current_state%local_divmax, current_state%global_divmax, 1, PRECISION_TYPE, MPI_MAX, &
          current_state%parallel%monc_communicator, ierr)
-  end subroutine deduce_global_divmax   
+    call check_mpi_success(ierr, "iterativesolver_mod", "deduce_global_divmax", "mpi_allreduce")
+  end subroutine deduce_global_divmax
 
   !> Copies the p field data to halo buffers for a specific process in a dimension and halo cell
   !! @param current_state The current model state
@@ -769,6 +773,7 @@ contains
     combined_handles(1)=current_state%psrce_x_hs_recv_request
     combined_handles(2)=current_state%psrce_y_hs_recv_request
     call mpi_waitall(2, combined_handles, MPI_STATUSES_IGNORE, ierr)
+    call check_mpi_success(ierr, "iterativesolver_mod", "complete_psrce_calculation", "mpi_waitall")
 
     do j=current_state%local_grid%local_domain_start_index(Y_INDEX), current_state%local_grid%local_domain_end_index(Y_INDEX)
       do k=2,current_state%local_grid%size(Z_INDEX)
@@ -782,7 +787,7 @@ contains
 #endif
       end do
     end do
-      
+
 #ifdef V_ACTIVE
     do i=current_state%local_grid%local_domain_start_index(X_INDEX), current_state%local_grid%local_domain_end_index(X_INDEX)
       do k=2,current_state%local_grid%size(Z_INDEX)
@@ -795,5 +800,6 @@ contains
     combined_handles(1)=current_state%psrce_x_hs_send_request
     combined_handles(2)=current_state%psrce_y_hs_send_request
     call mpi_waitall(2, combined_handles, MPI_STATUSES_IGNORE, ierr)
-  end subroutine complete_psrce_calculation 
+    call check_mpi_success(ierr, "iterativesolver_mod", "complete_psrce_calculation", "mpi_waitall")
+  end subroutine complete_psrce_calculation
 end module iterativesolver_mod

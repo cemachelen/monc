@@ -10,6 +10,7 @@ module terminationcheck_mod
   use optionsdatabase_mod, only : options_get_integer, options_has_key, options_get_real, options_add, options_get_string
   use logging_mod, only : LOG_WARN, log_master_log
   use mpi, only : MPI_INT, MPI_LOGICAL, MPI_IN_PLACE, MPI_LOR, mpi_wtime
+  use mpi_error_handler_mod, only : check_mpi_success
   implicit none
 
 #ifndef TEST_MODE
@@ -66,7 +67,7 @@ module terminationcheck_mod
           check_for_walltime=.false.
           exit
         end if
-      end do            
+      end do
       if (check_for_walltime) then
          walltime_secs=conv_to_integer(walltime_string(pidx:))
         if (walltime_mins .lt. 0 .or. walltime_mins .gt. 59) then
@@ -84,7 +85,7 @@ module terminationcheck_mod
         end if
         max_walltime_secs=(walltime_hours*60*60)+(walltime_mins*60)+walltime_secs
       end if
-    end if    
+    end if
   end subroutine init_callback
 
   !> Timestep hook which is called at each timestep to determine whether or not to terminate timestep iterations
@@ -109,19 +110,22 @@ module terminationcheck_mod
       current_state%continue_timestep=int(mpi_wtime() - current_state%model_start_wtime) .lt. max_walltime_secs
       call mpi_allreduce(MPI_IN_PLACE, current_state%continue_timestep, 1, MPI_LOGICAL, MPI_LOR, &
            current_state%parallel%monc_communicator, ierr)
+      call check_mpi_success(ierr, "terminationcheck_mod", "timestep_callback", "mpi_allreduce")
       if (.not. current_state%continue_timestep) current_state%termination_reason=WALLTIME_TERMINATION_REASON
-    end if    
+    end if
 
     if (current_state%continue_timestep .and. mod(current_state%timestep, check_messages_file_frequency) == 0) then
       if (current_state%parallel%my_rank == 0) then
         file_message_status=check_messages_file(current_state)
         call mpi_bcast(file_message_status, 1, MPI_INT, 0, current_state%parallel%monc_communicator, ierr)
+        call check_mpi_success(ierr, "terminationcheck_mod", "timestep_callback", "mpi_bcast")
       else
         call mpi_bcast(file_message_status, 1, MPI_INT, 0, current_state%parallel%monc_communicator, ierr)
+        call check_mpi_success(ierr, "terminationcheck_mod", "timestep_callback", "mpi_bcast")
         if (file_message_status == 1) current_state%continue_timestep=.false.
       end if
       if (.not. current_state%continue_timestep) current_state%termination_reason=MESSAGE_TERMINATION_REASON
-    end if    
+    end if
   end subroutine timestep_callback
 
   !> Checks the messages file for commands which determine user control of the model
@@ -141,8 +145,8 @@ module terminationcheck_mod
           check_messages_file=1
           current_state%continue_timestep=.false.
         end if
-      end if      
-    end if    
+      end if
+    end if
     close(FILE_UNIT)
-  end function check_messages_file  
+  end function check_messages_file
 end module terminationcheck_mod

@@ -16,6 +16,7 @@ module reduction_inter_io_mod
   use inter_io_specifics_mod, only : handle_completion, register_inter_io_communication, find_inter_io_from_name, &
        package_inter_io_communication_message, unpackage_inter_io_communication_message
   use mpi, only : MPI_DOUBLE_PRECISION, MPI_INT, MPI_ANY_SOURCE, MPI_REQUEST_NULL, MPI_STATUS_IGNORE, MPI_CHARACTER, MPI_BYTE
+  use mpi_error_handler_mod, only : check_mpi_success
   use mpi_communication_mod, only : lock_mpi, unlock_mpi, wait_for_mpi_request
   implicit none
 
@@ -34,7 +35,7 @@ module reduction_inter_io_mod
      character(len=STRING_LENGTH) :: field_name
      integer :: contributed_moncs, contributed_io_servers, timestep, reduction_operator, async_handle, mutex, root
      procedure(handle_completion), pointer, nopass :: completion_procedure
-  end type reduction_progress_type  
+  end type reduction_progress_type
 
   integer, volatile :: reduction_progress_rwlock, inter_io_description_mutex, clean_progress_mutex, &
        reduction_count_mutex, previous_clean_reduction_count, reduction_count
@@ -60,7 +61,7 @@ contains
       call check_thread_status(forthread_mutex_init(reduction_count_mutex, -1))
       call register_inter_io_communication(io_configuration, MY_INTER_IO_TAG, handle_recv_data_from_io_server, MY_INTER_IO_NAME)
     end if
-  end subroutine init_reduction_inter_io  
+  end subroutine init_reduction_inter_io
 
   !> Handles the receiving of data from some other IO server. This is issued call back style within a thread
   !! to handle that data
@@ -69,7 +70,7 @@ contains
   subroutine handle_recv_data_from_io_server(io_configuration, data_buffer, inter_io_index)
     type(io_configuration_type), intent(inout) :: io_configuration
     character, dimension(:), intent(inout) :: data_buffer
-    integer, intent(in) :: inter_io_index    
+    integer, intent(in) :: inter_io_index
 
     call handle_process_recv_from_other_IO_server(io_configuration, io_configuration%inter_io_communications(inter_io_index), &
          io_configuration%my_io_rank, data_buffer, io_configuration%number_of_io_servers)
@@ -83,7 +84,7 @@ contains
     type(io_configuration_type), intent(inout) :: io_configuration
 
     check_reduction_inter_io_for_completion=check_and_clean_progress(io_configuration%my_io_rank)
-  end function check_reduction_inter_io_for_completion  
+  end function check_reduction_inter_io_for_completion
 
   !> Finalises the reduction action, waiting for all outstanding requests and then freeing data
   !! @param io_configuration Configuration state of the IO server
@@ -126,13 +127,13 @@ contains
        root, timestep, completion_procedure)
     type(io_configuration_type), intent(inout) :: io_configuration
     real(kind=DOUBLE_PRECISION), dimension(:) :: field_values
-    integer, intent(in) :: field_size, reduction_op, root, timestep    
+    integer, intent(in) :: field_size, reduction_op, root, timestep
     character(len=*), intent(in) :: reduction_field_name
     procedure(handle_completion) :: completion_procedure
 
     type(reduction_progress_type), pointer :: reduction_progress
     logical :: collective_values_new
-        
+
     call clean_progress(io_configuration%my_io_rank)
     reduction_progress=>find_or_add_reduction_progress(timestep, reduction_op, root, reduction_field_name, completion_procedure)
 
@@ -144,11 +145,11 @@ contains
 
     call integrate_io_server_collective_values(reduction_op, reduction_progress, field_values, field_size, collective_values_new)
     if (reduction_progress%contributed_moncs == io_configuration%number_of_moncs) then
-      reduction_progress%contributed_io_servers=reduction_progress%contributed_io_servers+1      
+      reduction_progress%contributed_io_servers=reduction_progress%contributed_io_servers+1
       call handle_local_moncs_completed_collective(io_configuration, reduction_progress)
     else
       call check_thread_status(forthread_mutex_unlock(reduction_progress%mutex))
-    end if    
+    end if
   end subroutine perform_inter_io_reduction
 
   subroutine clean_progress(myrank)
@@ -156,14 +157,14 @@ contains
 
     logical :: cc_dummy
 
-    call check_thread_status(forthread_mutex_lock(reduction_count_mutex))  
+    call check_thread_status(forthread_mutex_lock(reduction_count_mutex))
     reduction_count=reduction_count+1
-    if (previous_clean_reduction_count + PERFORM_CLEAN_EVERY .lt. reduction_count) then      
+    if (previous_clean_reduction_count + PERFORM_CLEAN_EVERY .lt. reduction_count) then
       previous_clean_reduction_count=reduction_count
-      call check_thread_status(forthread_mutex_unlock(reduction_count_mutex))        
+      call check_thread_status(forthread_mutex_unlock(reduction_count_mutex))
       cc_dummy=check_and_clean_progress(myrank)
     else
-      call check_thread_status(forthread_mutex_unlock(reduction_count_mutex))      
+      call check_thread_status(forthread_mutex_unlock(reduction_count_mutex))
     end if
   end subroutine clean_progress
 
@@ -246,7 +247,7 @@ contains
       reduction_progress%values=single_server_values
     else
       if (reduction_op == MEAN .or. reduction_op == SUM) then
-        reduction_progress%values=reduction_progress%values+single_server_values       
+        reduction_progress%values=reduction_progress%values+single_server_values
       else if (reduction_op == MIN .or. reduction_op == MAX) then
         do k=1, number_elements
           if (reduction_op == MIN) then
@@ -273,7 +274,7 @@ contains
     type(reduction_progress_type), intent(inout) :: reduction_progress
 
     integer :: ierr, inter_io_comm_index
-    
+
     if (io_configuration%my_io_rank == reduction_progress%root .and. &
          reduction_progress%contributed_io_servers == io_configuration%number_of_io_servers) then
       call handle_collective_completed(io_configuration, reduction_progress)
@@ -288,6 +289,7 @@ contains
              MPI_BYTE, reduction_progress%root, &
              io_configuration%inter_io_communications(inter_io_comm_index)%message_tag, &
              io_configuration%io_communicator, reduction_progress%async_handle, ierr)
+        call check_mpi_success(ierr, "reduction_inter_io_mod", "handle_local_moncs_completed_collective", "mpi_isend")
         call unlock_mpi()
         ! Deallocate the current value as this is finished with and has been packed into the send buffer
         if (allocated(reduction_progress%values)) deallocate(reduction_progress%values)
@@ -319,7 +321,7 @@ contains
     collective_values_new=.not. allocated(reduction_progress%values)
     if (collective_values_new) allocate(reduction_progress%values(size(field_values)))
 
-    reduction_progress%contributed_io_servers=reduction_progress%contributed_io_servers+1    
+    reduction_progress%contributed_io_servers=reduction_progress%contributed_io_servers+1
     call integrate_io_server_collective_values(reduction_op, reduction_progress, &
          field_values, size(field_values), collective_values_new)
     if (reduction_progress%contributed_io_servers == number_io_servers) then
@@ -337,10 +339,10 @@ contains
   subroutine handle_collective_completed(io_configuration, reduction_progress)
     type(io_configuration_type), intent(inout) :: io_configuration
     type(reduction_progress_type), intent(inout) :: reduction_progress
-    
+
     if (reduction_progress%reduction_operator == MEAN) then
       reduction_progress%values=reduction_progress%values/io_configuration%number_of_global_moncs
-    end if    
+    end if
     call reduction_progress%completion_procedure(io_configuration, reduction_progress%values, &
          reduction_progress%field_name, reduction_progress%timestep)
     call check_thread_status(forthread_mutex_unlock(reduction_progress%mutex))
@@ -383,14 +385,14 @@ contains
           new_progress%completion_procedure=>completion_procedure
         else
           new_progress%completion_procedure=>null()
-        end if        
+        end if
         generic=>new_progress
         call c_put_generic(reduction_progresses, generate_reduction_key(field_name, timestep, reduction_operator), &
              generic, .false.)
         find_or_add_reduction_progress=>new_progress
       end if
       call check_thread_status(forthread_rwlock_unlock(reduction_progress_rwlock))
-    end if      
+    end if
     if (.not. associated(find_or_add_reduction_progress%completion_procedure) .and. present(completion_procedure)) then
       find_or_add_reduction_progress%completion_procedure=>completion_procedure
     end if
@@ -403,7 +405,7 @@ contains
   !! @param reduction_progress_location Optional location which is set to be the index of the matching progress item
   !! @returns Pointer to the reduction progress or null if none is found
   function find_reduction_progress(timestep, reduction_operator, field_name, issue_read_lock)
-    integer, intent(in) :: timestep, reduction_operator    
+    integer, intent(in) :: timestep, reduction_operator
     logical, intent(in), optional :: issue_read_lock
     type(reduction_progress_type), pointer :: find_reduction_progress
     character(len=*), intent(in) :: field_name
@@ -412,17 +414,17 @@ contains
     logical :: do_read_lock
 
     if (present(issue_read_lock)) then
-      do_read_lock=issue_read_lock      
+      do_read_lock=issue_read_lock
     else
       do_read_lock=.true.
     end if
 
     if (do_read_lock) call check_thread_status(forthread_rwlock_rdlock(reduction_progress_rwlock))
-    generic=>c_get_generic(reduction_progresses, generate_reduction_key(field_name, timestep, reduction_operator))     
+    generic=>c_get_generic(reduction_progresses, generate_reduction_key(field_name, timestep, reduction_operator))
     if (do_read_lock) call check_thread_status(forthread_rwlock_unlock(reduction_progress_rwlock))
     if (associated(generic)) then
       select type(generic)
-      type is (reduction_progress_type)      
+      type is (reduction_progress_type)
         find_reduction_progress=>generic
       end select
     else
@@ -434,7 +436,7 @@ contains
   !! @param reduction_progress The reduction progress to remove from the list
   subroutine remove_reduction_progress(reduction_progress)
     type(reduction_progress_type), intent(in) :: reduction_progress
-        
+
     class(*), pointer :: generic
     character(len=STRING_LENGTH) :: specific_key
 
@@ -471,12 +473,12 @@ contains
 
     if (associated(generic)) then
       select type(generic)
-      type is (reduction_progress_type)      
+      type is (reduction_progress_type)
         retrieve_reduction_progress=>generic
       end select
     else
       retrieve_reduction_progress=>null()
-    end if 
+    end if
   end function retrieve_reduction_progress
 
   !> Given the map of action attributes this procedure will identify the reduction operator that has been
@@ -485,7 +487,7 @@ contains
   !! @returns The reduction operator
   integer function get_reduction_operator(op_string)
     character(len=*), intent(in) :: op_string
-    
+
     if (op_string .eq. "mean") then
       get_reduction_operator=MEAN
     else if (op_string .eq. "min") then
@@ -497,5 +499,5 @@ contains
     else
       call log_log(LOG_ERROR, "Reduction operator '"//trim(op_string)//"' not recognised")
     end if
-  end function get_reduction_operator  
+  end function get_reduction_operator
 end module reduction_inter_io_mod

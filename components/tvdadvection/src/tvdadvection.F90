@@ -12,9 +12,10 @@ module tvdadvection_mod
   use optionsdatabase_mod, only : options_get_string, options_get_integer
   use collections_mod, only : map_type
   use mpi, only : MPI_REQUEST_NULL, MPI_STATUS_IGNORE
+  use mpi_error_handler_mod, only : check_mpi_success
   use q_indices_mod, only: get_q_index, standard_q_names
-  ! Some tvd diagnostic terms 
-  use def_tvd_diagnostic_terms, only: tvd_dgs_terms 
+  ! Some tvd diagnostic terms
+  use def_tvd_diagnostic_terms, only: tvd_dgs_terms
   use registry_mod, only : is_component_enabled
 
   implicit none
@@ -30,7 +31,7 @@ module tvdadvection_mod
        w_advection, th_advection
   real(kind=DEFAULT_PRECISION), dimension(:,:), allocatable :: q_advection
   real(kind=DEFAULT_PRECISION), dimension(:,:), allocatable :: tracer_advection
-  
+
   type(prognostic_field_type), dimension(:), allocatable :: interpolated_fields
 
   ! Local tendency diagnostic variables for this component
@@ -74,7 +75,7 @@ contains
     tvdadvection_get_descriptor%published_fields(3)="w_advection"
     tvdadvection_get_descriptor%published_fields(4)="th_advection"
     tvdadvection_get_descriptor%published_fields(5)="q_advection"
-    
+
 
     tvdadvection_get_descriptor%published_fields(5+1)="tend_u_tvdadvection_3d_local"
     tvdadvection_get_descriptor%published_fields(5+2)="tend_v_tvdadvection_3d_local"
@@ -99,7 +100,7 @@ contains
     tvdadvection_get_descriptor%published_fields(5+11+9)="tend_qs_tvdadvection_profile_total_local"
     tvdadvection_get_descriptor%published_fields(5+11+10)="tend_qg_tvdadvection_profile_total_local"
     tvdadvection_get_descriptor%published_fields(5+11+11)="tend_tabs_tvdadvection_profile_total_local"
-    
+
     tvdadvection_get_descriptor%published_fields(5+11+11+1)="tracer_advection"
 
 
@@ -215,7 +216,7 @@ contains
     type(model_state_type), target, intent(inout) :: current_state
     character(len=*), intent(in) :: name
     type(component_field_value_type), intent(out) :: field_value
-    
+
     if (name .eq. "u_advection") then
       allocate(field_value%real_1d_array(size(u_advection)), source=u_advection)
     else if (name .eq. "v_advection") then
@@ -295,23 +296,23 @@ contains
     xdim=.false.
     ydim=.false.
     num_fields=0
-#ifdef U_ACTIVE    
+#ifdef U_ACTIVE
     xdim=.true.
     num_fields = num_fields + 1
     fields(num_fields)%ptr => current_state%u
     sizes(num_fields,:) = (/ 2, 2 /) ! need um2 therefore -2 (applies to all interpolations)
-    u_index = num_fields    
+    u_index = num_fields
 #endif
 
 #ifdef V_ACTIVE
     ydim=.true.
-    num_fields = num_fields + 1     
+    num_fields = num_fields + 1
     fields(num_fields)%ptr => current_state%v
     sizes(num_fields,:) = (/ 1, 1 /)
     v_index=num_fields
 #endif
 
-#ifdef W_ACTIVE    
+#ifdef W_ACTIVE
     num_fields = num_fields + 1
     fields(num_fields)%ptr => current_state%w
     sizes(num_fields,:) = (/ 1, 1 /)
@@ -341,7 +342,7 @@ contains
          q_advection(current_state%global_grid%size(Z_INDEX), current_state%number_q_fields), &
          tracer_advection(current_state%global_grid%size(Z_INDEX), current_state%n_tracers))
 
-    advect_flow=determine_if_advection_here(options_get_string(current_state%options_database, "advection_flow_fields"))    
+    advect_flow=determine_if_advection_here(options_get_string(current_state%options_database, "advection_flow_fields"))
     advect_th=determine_if_advection_here(options_get_string(current_state%options_database, "advection_theta_field"))
     advect_q=determine_if_advection_here(options_get_string(current_state%options_database, "advection_q_fields"))
     advect_tracer=determine_if_advection_here(options_get_string(current_state%options_database, "advection_theta_field"))
@@ -516,7 +517,7 @@ contains
     if (allocated(tend_pr_tot_qg)) deallocate(tend_pr_tot_qg)
     if (allocated(tend_pr_tot_tabs)) deallocate(tend_pr_tot_tabs)
 
-  end subroutine finalisation_callback  
+  end subroutine finalisation_callback
 
   !> Timestep callback hook which performs the TVD advection for each prognostic field
   !! @param current_state The current model state_mod
@@ -608,7 +609,7 @@ contains
          current_state%v, current_state%w, current_state%zu, current_state%su, current_state%global_grid, &
          current_state%local_grid, current_state%parallel, current_state%halo_column, current_state%field_stepping)
     if (is_component_enabled(current_state%options_database, "profile_diagnostics")) then
-       ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument 
+       ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument
        !       list in advect_scalar_field.
        tvd_dgs_terms%adv_u_dgs(:, current_state%column_local_y, current_state%column_local_x) =  &
             flux_z(:)
@@ -620,7 +621,7 @@ contains
          current_state%v, current_state%w, current_state%zv, current_state%sv, current_state%global_grid, &
          current_state%local_grid, current_state%parallel, current_state%halo_column, current_state%field_stepping)
     if (is_component_enabled(current_state%options_database, "profile_diagnostics")) then
-       ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument 
+       ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument
        !       list in advect_scalar_field.
        tvd_dgs_terms%adv_v_dgs(:, current_state%column_local_y, current_state%column_local_x) =  &
             flux_z(:)
@@ -632,7 +633,7 @@ contains
          current_state%v, current_state%w, current_state%zw, current_state%sw, current_state%global_grid,&
          current_state%local_grid, current_state%parallel, current_state%halo_column, current_state%field_stepping)
     if (is_component_enabled(current_state%options_database, "profile_diagnostics")) then
-       ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument 
+       ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument
        !       list in advect_scalar_field.
        tvd_dgs_terms%adv_w_dgs(:, current_state%column_local_y, current_state%column_local_x) =  &
             flux_z(:)
@@ -652,19 +653,19 @@ contains
     if (current_state%scalar_stepping == FORWARD_STEPPING) dtm=current_state%dtm
 
     do i=1,current_state%number_q_fields
-      if (current_state%q(i)%active) then           
+      if (current_state%q(i)%active) then
         call advect_scalar_field(current_state%column_local_y, current_state%column_local_x, dtm, current_state%u, &
              current_state%v, current_state%w, current_state%zq(i), current_state%q(i), current_state%sq(i), &
              current_state%global_grid, current_state%local_grid, current_state%parallel, &
              current_state%halo_column, current_state%field_stepping)
         q_advection(:,i)=current_state%sq(i)%data(:, current_state%column_local_y, current_state%column_local_x)
         if (is_component_enabled(current_state%options_database, "profile_diagnostics")) then
-           ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument 
+           ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument
            !       list in advect_scalar_field.
            tvd_dgs_terms%adv_q_dgs(:, current_state%column_local_y, current_state%column_local_x, i) =  &
                 flux_z(:)
         endif
-           
+
       end if
     end do
   end subroutine advect_q_fields
@@ -685,7 +686,7 @@ contains
            current_state%v, current_state%w, current_state%ztracer(i), current_state%tracer(i), current_state%stracer(i), &
            current_state%global_grid, current_state%local_grid, current_state%parallel, &
            current_state%halo_column, current_state%field_stepping)
-      tracer_advection(:,i)=current_state%stracer(i)%data(:, current_state%column_local_y, current_state%column_local_x)          
+      tracer_advection(:,i)=current_state%stracer(i)%data(:, current_state%column_local_y, current_state%column_local_x)
     end do
   end subroutine advect_tracer_fields
 
@@ -705,7 +706,7 @@ contains
            current_state%local_grid, current_state%parallel, current_state%halo_column, current_state%field_stepping)
       th_advection=current_state%sth%data(:, current_state%column_local_y, current_state%column_local_x)
       if (is_component_enabled(current_state%options_database, "profile_diagnostics")) then
-           ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument 
+           ! NOTE: flux_z is declared at the top of module and then passed into ultflx, through argument
            !       list in advect_scalar_field.
          tvd_dgs_terms%adv_th_dgs(:, current_state%column_local_y, current_state%column_local_x) =  &
               flux_z(:)
@@ -844,7 +845,7 @@ contains
     if (.not. halo_column) then
       call differentiate_face_values(1, 1, interpolated_fields(u_index), interpolated_fields(v_index), &
            interpolated_fields(w_index), y_local_index, x_local_index, sv, local_grid, global_grid, &
-           v%flux_previous_y, v%flux_previous_x(:,y_local_index), &           
+           v%flux_previous_y, v%flux_previous_x(:,y_local_index), &
            global_grid%configuration%vertical%tzc1, global_grid%configuration%vertical%tzc2, .true.)
       v_advection=sv%data(:, y_local_index, x_local_index)
     end if
@@ -970,6 +971,7 @@ contains
     if (y_local_index == local_grid%local_domain_end_index(Y_INDEX) .and. parallel%my_coords(Y_INDEX) == 0 .and. &
          field%async_flux_handle .ne. MPI_REQUEST_NULL) then
       call mpi_wait(field%async_flux_handle, MPI_STATUS_IGNORE, ierr)
+      call check_mpi_success(ierr, "tvdadvection_mod", "complete_y_flux_wrap_send_if_required", "mpi_wait")
     end if
   end subroutine complete_y_flux_wrap_send_if_required
 
@@ -993,9 +995,10 @@ contains
     if (y_local_index == local_grid%local_domain_start_index(Y_INDEX)-1 .and. parallel%my_coords(Y_INDEX) == 0) then
       if (.not. allocated(field%flux_y_buffer)) allocate(field%flux_y_buffer(local_grid%size(Z_INDEX)))
       field%flux_y_buffer(:) = flux_y(:)
-      if (parallel%my_rank .ne. local_grid%neighbours(Y_INDEX,1)) then      
+      if (parallel%my_rank .ne. local_grid%neighbours(Y_INDEX,1)) then
         call mpi_isend(field%flux_y_buffer, local_grid%size(Z_INDEX), PRECISION_TYPE, local_grid%neighbours(Y_INDEX,1), 0, &
              parallel%neighbour_comm, field%async_flux_handle, ierr)
+        call check_mpi_success(ierr, "tvdadvection_mod", "register_y_flux_wrap_send_if_required", "mpi_isend")
       end if
     end if
   end subroutine register_y_flux_wrap_send_if_required
@@ -1018,6 +1021,7 @@ contains
          parallel%dim_sizes(Y_INDEX)-1) then
       if (field%async_flux_handle .ne. MPI_REQUEST_NULL) then
         call mpi_wait(field%async_flux_handle, MPI_STATUS_IGNORE, ierr)
+        call check_mpi_success(ierr, "tvdadvection_mod", "complete_y_flux_wrap_recv_if_required", "mpi_wait")
       end if
       flux_y(:) = field%flux_y_buffer(:)
     end if
@@ -1025,7 +1029,7 @@ contains
 
   !> Registers an MPI asynchronous receive for the flux if required.
   !!
-  !! This is registered at the start and we have until the last column in Y until it must be completed. No 
+  !! This is registered at the start and we have until the last column in Y until it must be completed. No
   !! communication is registered if this is a local operation
   !! @param y_local_index The local index in Y
   !! @param field The prognostic field
@@ -1045,6 +1049,7 @@ contains
         if (.not. allocated(field%flux_y_buffer)) allocate(field%flux_y_buffer(local_grid%size(Z_INDEX)))
         call mpi_irecv(field%flux_y_buffer, local_grid%size(Z_INDEX), PRECISION_TYPE, local_grid%neighbours(Y_INDEX,3), 0, &
              parallel%neighbour_comm, field%async_flux_handle, ierr)
+        call check_mpi_success(ierr, "tvdadvection_mod", "register_y_flux_wrap_recv_if_required", "mpi_irecv")
       end if
     end if
   end subroutine register_y_flux_wrap_recv_if_required

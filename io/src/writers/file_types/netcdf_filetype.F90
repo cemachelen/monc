@@ -30,6 +30,7 @@ module netcdf_filetype_writer_mod
   use optionsdatabase_mod, only : options_size, options_value_at, options_key_at
   use netcdf_misc_mod, only : check_netcdf_status
   use mpi, only : MPI_STATUS_IGNORE, MPI_REQUEST_NULL, MPI_INT
+  use mpi_error_handler_mod, only : check_mpi_success
 
   implicit none
 
@@ -58,8 +59,8 @@ contains
   subroutine finalise_netcdf_filetype()
     call check_thread_status(forthread_rwlock_destroy(file_states_rwlock))
     call check_thread_status(forthread_mutex_destroy(netcdf_mutex))
-  end subroutine finalise_netcdf_filetype  
-  
+  end subroutine finalise_netcdf_filetype
+
   !> Defines a NetCDF file - which creates it, defines all dimensions and variables. This must be called by all IO server
   !! processes as the NetCDF operations here are collective
   !! @param io_configuration The IO server configuration
@@ -74,7 +75,7 @@ contains
     integer, intent(in) :: timestep
     real, intent(in) :: time
     logical, intent(in) :: termination_write, time_basis
-    
+
     character(len=STRING_LENGTH) :: unique_filename
     type(netcdf_diagnostics_type), pointer :: ncdf_writer_state
     class(*), pointer :: generic
@@ -117,7 +118,7 @@ contains
         call define_time_series_dimensions(ncdf_writer_state, file_writer_information, time, time_points, termination_write, &
                                            time_basis)
         call define_variables(io_configuration, ncdf_writer_state, file_writer_information)
-        zn_var_id = define_coordinate_variable(ncdf_writer_state,"zn")  
+        zn_var_id = define_coordinate_variable(ncdf_writer_state,"zn")
         z_var_id  = define_coordinate_variable(ncdf_writer_state,"z")
         nopt_var_id = define_options_database_variable(ncdf_writer_state)
         if (log_get_logging_level() .ge. LOG_DEBUG) then
@@ -125,7 +126,7 @@ contains
                        trim(conv_to_string(io_configuration%my_io_rank))//&
                        ", unique_filename: "//trim(unique_filename)//&
                        ", time: "//trim(conv_to_string(time))  )
-        end if 
+        end if
         call lock_mpi()
         call check_netcdf_status(nf90_enddef(ncdf_writer_state%ncid))
         call unlock_mpi()
@@ -148,9 +149,9 @@ contains
           call write_coordinate_variable(ncdf_writer_state, z_var_id,  io_configuration%z_field)
         end if ! end write isolation
 
-        call check_thread_status(forthread_mutex_unlock(ncdf_writer_state%mutex))        
+        call check_thread_status(forthread_mutex_unlock(ncdf_writer_state%mutex))
         call check_thread_status(forthread_mutex_unlock(netcdf_mutex))
- 
+
       else
         call check_thread_status(forthread_rwlock_unlock(file_states_rwlock))
       end if
@@ -196,9 +197,9 @@ contains
     file_state=>get_file_state(filename, timestep, .true.)
     if (present(terminated)) terminated=file_state%termination_write
     get_writer_entry_from_netcdf=>file_state%corresponding_writer_entry
-  end function get_writer_entry_from_netcdf  
+  end function get_writer_entry_from_netcdf
 
-  !> Call back for the inter IO reduction which actually does the NetCDF file closing which is a 
+  !> Call back for the inter IO reduction which actually does the NetCDF file closing which is a
   !! collective (synchronous) operation. This also cleans up the file state as it is no longer required
   !! @param io_configuration The IO server configuration
   !! @param filename The name of the file that is being closed
@@ -232,16 +233,16 @@ contains
       type is(netcdf_diagnostics_timeseries_type)
         ptr => generic
         deallocate(ptr)
-      end select      
-    end do  
+      end select
+    end do
     call c_free(file_state%timeseries_dimension)
     call check_thread_status(forthread_rwlock_wrlock(file_states_rwlock))
     call c_remove(file_states, trim(filename)//"#"//trim(conv_to_string(timestep)))
-    call check_thread_status(forthread_rwlock_unlock(file_states_rwlock))    
+    call check_thread_status(forthread_rwlock_unlock(file_states_rwlock))
     if (log_get_logging_level() .ge. LOG_DEBUG .and. log_is_master()) then
       call log_master_log(LOG_DEBUG, "Done physical close for NetCDF file at timestep "//trim(conv_to_string(timestep)))
-    end if    
-  end subroutine close_netcdf_file 
+    end if
+  end subroutine close_netcdf_file
 
   !> Writes the contents of a variable to the NetCDF file. This also removes the written entries from the field information
   !! type in order to conserve memory
@@ -257,7 +258,7 @@ contains
     real, intent(in) :: time
 
     type(netcdf_diagnostics_type), pointer :: file_state
-            
+
     file_state=>get_file_state(filename, timestep, .true.)
     if (field_to_write_information%collective_write) then
       if (field_to_write_information%collective_contiguous_optimisation) then
@@ -269,7 +270,7 @@ contains
     else
       call write_independent_variable_to_diagnostics(field_to_write_information, timestep, time, file_state)
     end if
-  end subroutine write_variable 
+  end subroutine write_variable
 
   !> Translates a dimension name to its numeric corresponding identifier
   !! @param dim_name The name of the dimension to look up
@@ -315,7 +316,7 @@ contains
     if (dash_idx .eq. -1) dash_idx=len_trim(dim_name)
 
     get_dimension_original_size=c_get_integer(dimension_store, dim_name(:dash_idx))
-  end function get_dimension_original_size  
+  end function get_dimension_original_size
 
   !> Writes a coordinate variable into the NetCDF file
   !! @param file_state The NetCDF file state
@@ -340,7 +341,7 @@ contains
   !! @param field_values The field values to write
   subroutine write_condition_variable(file_state, c_var_id, field_values)
     type(netcdf_diagnostics_type), intent(inout) :: file_state
-    integer, intent(in) :: c_var_id 
+    integer, intent(in) :: c_var_id
     character(len=STRING_LENGTH), dimension(:), intent(in) :: field_values
 
     integer :: count_to_write(2), start_pos(2)
@@ -424,7 +425,7 @@ contains
 
     collective_descriptor_iterator=c_get_iterator(field_to_write_information%collective_descriptors)
     do while (c_has_next(collective_descriptor_iterator))
-      collective_descriptor=>get_next_collective_descriptor(collective_descriptor_iterator) 
+      collective_descriptor=>get_next_collective_descriptor(collective_descriptor_iterator)
       allocate(contiguous_values(collective_descriptor%count(1), collective_descriptor%count(2), &
            collective_descriptor%count(3), number_time_entries))
       monc_iterator=c_get_iterator(collective_descriptor%specific_monc_info)
@@ -455,7 +456,7 @@ contains
                    monc_descriptor%counts(Y_INDEX), monc_descriptor%counts(X_INDEX)/))
             end if
             deallocate(data_value%values)
-            deallocate(data_value)            
+            deallocate(data_value)
           end if
         end do
       end do
@@ -500,11 +501,11 @@ contains
     if (field_to_write_information%max_num_collective_writes_request_handle .ne. MPI_REQUEST_NULL) then
       call wait_for_mpi_request(field_to_write_information%max_num_collective_writes_request_handle)
     end if
-    if (c_size(field_to_write_information%collective_descriptors) .lt. field_to_write_information%max_num_collective_writes) then      
+    if (c_size(field_to_write_information%collective_descriptors) .lt. field_to_write_information%max_num_collective_writes) then
       call check_thread_status(forthread_mutex_lock(file_state%mutex))
       call check_thread_status(forthread_mutex_lock(netcdf_mutex))
       call lock_mpi()
-      do i=c_size(field_to_write_information%collective_descriptors), field_to_write_information%max_num_collective_writes-1        
+      do i=c_size(field_to_write_information%collective_descriptors), field_to_write_information%max_num_collective_writes-1
         call check_netcdf_status(nf90_put_var(file_state%ncid, field_id, (/1.0/), start=(/1/), count=(/0/)))
       end do
       call unlock_mpi()
@@ -512,7 +513,7 @@ contains
       call check_thread_status(forthread_mutex_unlock(file_state%mutex))
     end if
   end subroutine write_contiguous_collective_variable_to_diagnostics
-  
+
   !> Retrieves the next collective descriptor based upon the iterator
   !! @param iterator The iterator to retrieve from, this is updated to reference the proceeding entry
   !! @returns The next collective descriptor
@@ -546,7 +547,7 @@ contains
   end function get_next_specific_monc_info
 
   !> Writes collective variables, where we are working with the values from multiple MONCs and storing these in their own
-  !! specific relative location in the diagnostics file. 
+  !! specific relative location in the diagnostics file.
   !! @param field_to_write_information The field that is going to be written
   !! @param timestep The write timestep
   !! @param time The write time
@@ -593,14 +594,14 @@ contains
           monc_entries_iterator=c_get_iterator(multi_monc_entries%monc_values)
           do while(c_has_next(monc_entries_iterator))
             monc_entries_map_entry=c_next_mapentry(monc_entries_iterator)
-            data_value=>get_data_value_by_field_name(multi_monc_entries%monc_values, monc_entries_map_entry%key)           
+            data_value=>get_data_value_by_field_name(multi_monc_entries%monc_values, monc_entries_map_entry%key)
             monc_location=c_get_integer(io_configuration%monc_to_index, monc_entries_map_entry%key)
             do k=1, field_to_write_information%dimensions
               dim_identifier=get_dimension_identifier(field_to_write_information%dim_size_defns(k), is_auto_dimension)
               if (dim_identifier .gt. -1) then
                 start(k)=io_configuration%registered_moncs(monc_location)%local_dim_starts(dim_identifier)
                 count(k)=io_configuration%registered_moncs(monc_location)%local_dim_sizes(dim_identifier)
-                if (is_auto_dimension) then              
+                if (is_auto_dimension) then
                   auto_period=ceiling(real(get_dimension_original_size(field_to_write_information%dim_size_defns(k), &
                        io_configuration%dimension_sizing))/field_to_write_information%actual_dim_size(k))
                   start(k)=(start(k)/auto_period)+1
@@ -676,9 +677,9 @@ contains
     end if
     deallocate(items_to_remove)
     if (allocated(timeseries_time_to_write)) deallocate(timeseries_time_to_write)
-  end subroutine write_collective_variable_to_diagnostics  
+  end subroutine write_collective_variable_to_diagnostics
 
-  !> Writes independent variables to the diagnostics file. This writes the entire variable and works by writing all the 
+  !> Writes independent variables to the diagnostics file. This writes the entire variable and works by writing all the
   !! memory up and then doing the write in one call
   !! @param field_to_write_information The field that is going to be written
   !! @param timestep The write timestep
@@ -829,7 +830,7 @@ contains
         call check_thread_status(forthread_mutex_lock(netcdf_mutex))
         call lock_mpi()
         do while (c_has_next(map_data_iterator))
-          map_data_entry=c_next_mapentry(map_data_iterator)          
+          map_data_entry=c_next_mapentry(map_data_iterator)
           call check_netcdf_status(nf90_put_var(file_state%ncid, field_id, trim(map_data_entry%key), (/ 1, 1, i, j /)))
           call check_netcdf_status(nf90_put_var(file_state%ncid, field_id, trim(c_get_string(map_data_entry)), (/ 1, 2, i, j /)))
           call c_remove(data_value%map_values, map_data_entry%key)
@@ -845,7 +846,7 @@ contains
     if (included_num .gt. 1) then
       do i=1, included_num-1
         call c_remove(field_to_write_information%values_to_write, items_to_remove(i))
-      end do      
+      end do
     end if
     deallocate(items_to_remove)
   end subroutine write_out_map
@@ -975,7 +976,7 @@ contains
           include_item=mod(tm, timestep_frequency) == 0
         else                 ! compare to timestep
           include_item=mod(ts, timestep_frequency) == 0
-        end if 
+        end if
       else ! Screen out zero-frequency requests (commonly checkpoints)
         include_item=.false.
       end if
@@ -985,7 +986,7 @@ contains
       ! This negates any others that were found to match the interval.
       if (is_checkpoint .and. c_has_next(iterator)) include_item=.false.
 
-      ! if the time entry is a factor of the requested sample interval (include_item) or 
+      ! if the time entry is a factor of the requested sample interval (include_item) or
       ! this is the last time point entry during any termination write or checkpoint file...
       ! then it may be considered for a time record entry in the netcdf file
       if (include_item .or. (.not. c_has_next(iterator) .and. termination_write)) then
@@ -994,7 +995,7 @@ contains
         ! then count it as a time series entry for file dimension allocation
         if (time_basis) then
           select_item = nint(tp_entry) .ge. nint(write_point+output_frequency) &
-                        .and. mod(nint(tp_entry),nint(output_frequency)) == 0 
+                        .and. mod(nint(tp_entry),nint(output_frequency)) == 0
           ! second condition is needed for actual output because of a condition on the time manipulation routines.
           ! time_basis requires (mod(nint(time), nint(output_frequency)) == 0) to enforce regularity.
         else
@@ -1025,7 +1026,7 @@ contains
     call check_netcdf_status(nf90_def_var(file_state%ncid, trim(coord_name), NF90_DOUBLE, dimension_ids, field_id))
     call unlock_mpi()
     define_coordinate_variable=field_id
-  end function define_coordinate_variable  
+  end function define_coordinate_variable
 
   !> Defines the options_database variable in the NetCDF file
   !! @param file_state The NetCDF file state
@@ -1088,7 +1089,7 @@ contains
       else if (file_writer_information%contents(i)%data_type == STRING_DATA_TYPE) then
         data_type=NF90_CHAR
       end if
-      variable_key=get_field_key(file_writer_information%contents(i))      
+      variable_key=get_field_key(file_writer_information%contents(i))
       if (file_writer_information%contents(i)%field_type == ARRAY_FIELD_TYPE) then
         allocate(dimension_ids(file_writer_information%contents(i)%dimensions+1))
         do j=1, file_writer_information%contents(i)%dimensions
@@ -1106,7 +1107,7 @@ contains
         if (any(dimension_ids .eq. nc_dim_id) .or. any(dimension_ids .eq. nd_dim_id)) then
           l_nc_dim = .true.
           l_nd_dim = .true.
-        end if 
+        end if
 
         !> Determine if this is a 2d-horizontal field, which can be written more efficiently with NF90_COLLECTIVE
         if (file_writer_information%contents(i)%dimensions .eq. 2) then
@@ -1124,7 +1125,7 @@ contains
              io_configuration%number_of_io_servers .gt. 1) .or. (l_horiz_field) ) then
           call check_netcdf_status(nf90_def_var_fill(file_state%ncid, field_id, 1, 1))
           call check_netcdf_status(nf90_var_par_access(file_state%ncid, field_id, NF90_COLLECTIVE))
-        end if        
+        end if
         call unlock_mpi()
         deallocate(dimension_ids)
       else if (file_writer_information%contents(i)%field_type == SCALAR_FIELD_TYPE) then
@@ -1132,7 +1133,7 @@ contains
         call check_netcdf_status(nf90_def_var(file_state%ncid, variable_key, &
              data_type, retrieve_time_series_dimension_id_for_field(file_state, file_writer_information, i), field_id))
         call unlock_mpi()
-      else if (file_writer_information%contents(i)%field_type == MAP_FIELD_TYPE) then        
+      else if (file_writer_information%contents(i)%field_type == MAP_FIELD_TYPE) then
         allocate(dimension_ids(4))
         dimension_ids(1)=file_state%string_dim_id
         dimension_ids(2)=file_state%key_value_dim_id
@@ -1234,7 +1235,7 @@ contains
     else
       get_specific_timeseries_dimension=>null()
     end if
-  end function get_specific_timeseries_dimension  
+  end function get_specific_timeseries_dimension
 
   !> Defines spatial dimensions in the diagnostics file
   !! @param file_state The NetCDF file state
@@ -1282,7 +1283,7 @@ contains
   !! @param filename The filename to look up
   !! @param timestep The timestep to look up
   !! @param dolock Whether to issue a read lock or not
-  !! @returns The corresponding file state entry or null if none is found  
+  !! @returns The corresponding file state entry or null if none is found
   function get_file_state(filename, timestep, dolock)
     character(len=*), intent(in) :: filename
     integer, intent(in) :: timestep
@@ -1297,7 +1298,7 @@ contains
 
     if (associated(generic)) then
       select type(generic)
-      type is (netcdf_diagnostics_type)      
+      type is (netcdf_diagnostics_type)
         get_file_state=>generic
       end select
     else
@@ -1311,8 +1312,8 @@ contains
   !! @param field_to_write_information The field to get the key from
   !! @returns The field name key
   character(len=STRING_LENGTH) function get_field_key(field_to_write_information)
-    type(writer_field_type), intent(in) :: field_to_write_information    
-    
+    type(writer_field_type), intent(in) :: field_to_write_information
+
     get_field_key=field_to_write_information%field_name
     if (field_to_write_information%duplicate_field_name) then
       if (field_to_write_information%time_manipulation_type == INSTANTANEOUS_TYPE) then
@@ -1322,8 +1323,8 @@ contains
       end if
     end if
   end function get_field_key
-  
-  !> Generates a unique filename based upon the base one specified and the number 
+
+  !> Generates a unique filename based upon the base one specified and the number
   !! of completed timesteps
   !! @param old_name The existing name that is used as a base
   !!                 This is the base '<file name="dir/filenamebase.nc"...' field from the xml
@@ -1337,7 +1338,7 @@ contains
     character(len=STRING_LENGTH), intent(out) :: new_name
 
     integer :: dot_posn
-    
+
     ! Find position of the file type "." demarcating the suffix, searching the base string backwards.
     dot_posn=index(old_name, ".", BACK=.true.)
     if (dot_posn .gt. 0) then
@@ -1352,7 +1353,7 @@ contains
     end if
     if (dot_posn .gt. 0) then
       new_name=trim(new_name)//old_name(dot_posn:len(old_name))
-    end if    
+    end if
   end subroutine generate_unique_filename
 
   !> Writes out global attributes into the checkpoint
@@ -1369,6 +1370,7 @@ contains
     call date_and_time(values=date_values)
     call lock_mpi()
     call mpi_bcast(date_values, 8, MPI_INT, 0, io_configuration%io_communicator, ierr)
+    call check_mpi_success(ierr, "netcdf_filetype", "write_out_global_attributes", "mpi_bcast")
     call unlock_mpi()
     date_time=trim(conv_to_string(date_values(3)))//"/"//&
          trim(conv_to_string(date_values(2)))//"/"//trim(conv_to_string(date_values(1)))//" "//trim(conv_to_string(&
